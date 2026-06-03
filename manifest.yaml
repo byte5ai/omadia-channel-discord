@@ -1,0 +1,151 @@
+schema_version: "1"
+
+# ===========================================================================
+# @omadia/channel-discord — Discord channel (Gateway bot via discord.js)
+# ---------------------------------------------------------------------------
+# Schema of truth: docs/harness-platform/manifest-schema.v1.yaml (section 14).
+# A channel ROUTES turns — it has NO capabilities / playbook of its own. It
+# receives native Discord Gateway events, translates them to the core
+# IncomingTurn shape, drives the orchestrator's ChatAgent, and renders the
+# answer back to Discord. Auth is a Bot Token from the Discord Developer
+# Portal (Applications → Bot → Token) — collected once at install as a vault
+# secret, exactly like a Telegram BotFather token (not a QR scan).
+# ===========================================================================
+
+identity:
+  id: "@omadia/channel-discord"           # === package.json "name"
+  kind: "channel"
+  domain: "discord"
+  name: "Discord"
+  version: "0.1.0"                         # === package.json "version"
+  description: "Discord-Channel via discord.js Gateway-Bot. Routet Discord-DMs, @Erwähnungen und den /ask Slash-Command in den Omadia-Orchestrator."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  homepage: "https://github.com/byte5ai/omadia-channel-discord"
+  icon: "./assets/icon.svg"
+  categories:
+    - "communication"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+depends_on: []
+
+lifecycle:
+  entry: "dist/plugin.js"                  # exports `activate(ctx, core)` (ChannelPlugin shape 1)
+  uninstall_policy:
+    entities: "delete"
+    memory: "delete"
+    secrets: "delete"                       # drops the stored Discord bot token
+
+# ---------------------------------------------------------------------------
+# Setup. The bot token IS a credential, so unlike the WhatsApp QR flow it is
+# collected here at install (type: secret → vault, read via ctx.secrets). The
+# remaining fields only tune routing/access policy and are plain config
+# (ctx.config.get).
+# ---------------------------------------------------------------------------
+setup:
+  fields:
+    - key: "discord_bot_token"
+      type: "secret"
+      label: "Discord Bot Token"
+      help: "Aus dem Discord Developer Portal → deine Application → Bot → 'Reset Token' / 'Copy'. Wird verschlüsselt im Vault gespeichert und nie wieder angezeigt."
+      placeholder: "Bot-Token aus dem Developer Portal (Bot → Reset Token)"
+      required: true
+
+    - key: "respond_in_guilds"
+      type: "enum"
+      label: "Verhalten in Servern (Guilds)"
+      help: "Wann der Bot in Server-Kanälen antwortet. 'mention' (Standard): nur wenn er @erwähnt wird. 'all': auf jede Nachricht (benötigt das Message-Content-Intent unten). 'off': in Servern stumm, nur Direktnachrichten."
+      required: false
+      default: "mention"
+      enum:
+        - { value: "mention", label: "Nur bei @Erwähnung" }
+        - { value: "all", label: "Auf jede Nachricht" }
+        - { value: "off", label: "In Servern stumm (nur DMs)" }
+
+    - key: "allow_dms"
+      type: "boolean"
+      label: "Direktnachrichten zulassen"
+      help: "Wenn aktiv, antwortet der Bot in 1:1-Direktnachrichten. DM-Inhalte sind auch ohne privilegiertes Intent für den Bot lesbar."
+      required: false
+      default: true
+
+    - key: "message_content_intent"
+      type: "boolean"
+      label: "Message-Content-Intent anfordern"
+      help: "NUR nötig für 'Auf jede Nachricht'. Fordert das privilegierte Message-Content-Intent an — das musst du im Developer Portal → Bot → 'Privileged Gateway Intents' separat aktivieren, sonst schlägt der Login fehl. Für DMs und @Erwähnungen NICHT nötig."
+      required: false
+      default: false
+
+    - key: "enable_slash_command"
+      type: "boolean"
+      label: "/ask Slash-Command registrieren"
+      help: "Registriert global den Slash-Command /ask <Frage>. Die globale Registrierung kann nach dem ersten Start bis zu einer Stunde brauchen, bis sie in allen Servern erscheint."
+      required: false
+      default: true
+
+    - key: "ignore_bots"
+      type: "boolean"
+      label: "Andere Bots ignorieren"
+      help: "Wenn aktiv, ignoriert der Bot Nachrichten anderer Bots/Webhooks (verhindert Bot-zu-Bot-Schleifen). Eigene Nachrichten werden immer ignoriert."
+      required: false
+      default: true
+
+    - key: "allowlist"
+      type: "string"
+      label: "Zugelassene IDs (optional)"
+      help: "Komma-getrennte Discord-User-IDs und/oder Guild-IDs, die mit dem Bot interagieren dürfen. Leer = alle. (Entwickler-Modus in Discord aktivieren → Rechtsklick → 'ID kopieren'.)"
+      required: false
+      default: ""
+
+  self_test: false
+
+# ---------------------------------------------------------------------------
+# Permissions. The bot token lives in the vault (ctx.secrets). No per-session
+# auth-state is persisted (the static token is the only credential), so memory
+# stays empty. network.outbound is descriptive for the operator permissions
+# summary — discord.js opens its OWN Gateway WebSocket + REST calls, it does
+# not route through ctx.http.
+# ---------------------------------------------------------------------------
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "discord.com"
+      - "*.discord.com"
+      - "gateway.discord.gg"
+      - "*.discord.gg"
+      - "*.discordapp.com"
+      - "cdn.discordapp.com"
+  filesystem:
+    scratch: false
+
+# Generic admin-UI iframe surface (rendered by web-ui for any plugin that
+# declares admin_ui_path). Shows connection status, the linked bot identity,
+# and the OAuth2 invite URL to add the bot to a server.
+admin_ui_path: "/api/discord-channel/admin/index.html"
+
+# ---------------------------------------------------------------------------
+# Channel block (schema section 14). Discord's Gateway is a long-lived
+# outbound WebSocket — no inbound webhook routes to mount.
+# ---------------------------------------------------------------------------
+channel:
+  transport:
+    kind: "websocket"
+  capabilities:
+    - "text"
+    - "typing_indicator"
+    - "buttons"
+  adapters:
+    - "text"
+    - "markdown"
