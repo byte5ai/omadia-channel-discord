@@ -17,7 +17,7 @@ identity:
   kind: "channel"
   domain: "discord"
   name: "Discord"
-  version: "0.1.0"                         # === package.json "version"
+  version: "0.1.2"                         # === package.json "version"
   description: "Discord-Channel via discord.js Gateway-Bot. Routet Discord-DMs, @Erwähnungen und den /ask Slash-Command in den Omadia-Orchestrator."
   authors:
     - name: "byte5 GmbH"
@@ -49,6 +49,75 @@ lifecycle:
 # (ctx.config.get).
 # ---------------------------------------------------------------------------
 setup:
+  guide:
+    en: |
+      ## Create a Discord bot
+
+      You need a **bot token** from the Discord Developer Portal. Takes about
+      5 minutes.
+
+      ### 1. Create an application + bot
+      1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and sign in.
+      2. Top right **New Application** → give it a name (e.g. "Omadia") → **Create**.
+      3. Left sidebar → **Bot** → confirm **Add Bot**.
+
+      ### 2. Copy the token
+      1. On the **Bot** tab → **Reset Token** → **Yes, do it!** → **Copy**.
+      2. Paste this value below as **Discord Bot Token**. It is stored encrypted
+         in the vault and **shown only once** — if lost, just "Reset Token" again.
+
+      ### 3. Intents (only for "Respond to every message")
+      The default (DMs + @mention) needs **no** privileged intent. Only if you set
+      *Behaviour in servers* to **Respond to every message**:
+      - Bot tab → **Privileged Gateway Intents** → enable **Message Content Intent** → **Save**.
+
+      ### 4. Invite the bot to your server
+      1. Left sidebar → **OAuth2** → **URL Generator**.
+      2. **Scopes**: tick `bot` and `applications.commands`.
+      3. **Bot Permissions**: at least *Send Messages* and *Read Message History*.
+      4. Copy the generated URL, open it in the browser, pick your server → **Authorize**.
+
+      > Tip: for the optional allowlist, enable **Settings → Advanced → Developer
+      > Mode** in Discord, then right-click a user/server → **Copy ID**.
+
+      ### 5. Done
+      Paste the token below and install. You'll see the connection status and the
+      invite URL afterwards in the plugin admin UI.
+    de: |
+      ## Discord-Bot anlegen
+
+      Du brauchst einen **Bot-Token** aus dem Discord Developer Portal. Das dauert
+      ca. 5 Minuten.
+
+      ### 1. Application + Bot erstellen
+      1. Öffne das [Discord Developer Portal](https://discord.com/developers/applications) und melde dich an.
+      2. Oben rechts **New Application** → Namen vergeben (z.B. „Omadia") → **Create**.
+      3. Linke Leiste → **Bot** → **Add Bot** bestätigen.
+
+      ### 2. Token kopieren
+      1. Im **Bot**-Tab → **Reset Token** → **Yes, do it!** → **Copy**.
+      2. Diesen Wert trägst du unten als **Discord Bot Token** ein. Er wird
+         verschlüsselt im Vault gespeichert und **nur einmal angezeigt** — bei
+         Verlust einfach erneut „Reset Token".
+
+      ### 3. Intents (nur bei „Auf jede Nachricht")
+      Standard (DMs + @Erwähnung) braucht **kein** privilegiertes Intent. Nur wenn
+      du *Verhalten in Servern* auf **Auf jede Nachricht** stellst:
+      - Bot-Tab → **Privileged Gateway Intents** → **Message Content Intent** aktivieren → **Save**.
+
+      ### 4. Bot auf deinen Server einladen
+      1. Linke Leiste → **OAuth2** → **URL Generator**.
+      2. **Scopes**: `bot` und `applications.commands` ankreuzen.
+      3. **Bot Permissions**: mindestens *Send Messages* und *Read Message History*.
+      4. Generierte URL unten kopieren, im Browser öffnen, deinen Server wählen → **Authorize**.
+
+      > Tipp: Für die optionale Allowlist aktiviere in Discord **Einstellungen →
+      > Erweitert → Entwicklermodus**, dann Rechtsklick auf einen User/Server →
+      > **ID kopieren**.
+
+      ### 5. Fertig
+      Token unten einsetzen und installieren. Den Verbindungsstatus und die
+      Einladungs-URL siehst du danach in der Plugin-Admin-UI.
   fields:
     - key: "discord_bot_token"
       type: "secret"
