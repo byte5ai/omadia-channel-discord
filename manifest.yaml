@@ -17,7 +17,7 @@ identity:
   kind: "channel"
   domain: "discord"
   name: "Discord"
-  version: "0.1.4"                         # === package.json "version"
+  version: "0.1.5"                         # === package.json "version"
   description: "Discord-Channel via discord.js Gateway-Bot. Routet Discord-DMs, @Erwähnungen und den /ask Slash-Command in den Omadia-Orchestrator."
   authors:
     - name: "byte5 GmbH"
@@ -198,6 +198,27 @@ permissions:
       - "cdn.discordapp.com"
   filesystem:
     scratch: false
+
+# omadia#838 — declare every capability this channel resolves through
+# `ctx.services.get`, retiring the `@omadia/channel-discord` row in
+# `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20`.
+#
+# `requires:` — `chatAgent@^1` is the orchestrator-published ChatAgentBundle
+# (`resolveChatAgent` throws "orchestrator unavailable" when absent), and
+# `@omadia/orchestrator` declares `provides: chatAgent@1`, so the capability
+# resolver resolves the edge and orders the orchestrator first.
+#
+# `optional_requires:` — `channelResolver@1` is the multi-orchestrator
+# per-turn router, published by the middleware kernel rather than a plugin
+# manifest, and its absence is survivable (every turn falls back to the
+# default chatAgent). A `requires:` entry would be permanently unresolved and
+# drop the channel from the eligible set; `optional_requires:` grants the same
+# declaration the service gate asks for without a resolver edge.
+requires:
+  - "chatAgent@^1"
+optional_requires:
+  - "channelResolver@1"
+provides: []
 
 # Generic admin-UI iframe surface (rendered by web-ui for any plugin that
 # declares admin_ui_path). Shows connection status, the linked bot identity,

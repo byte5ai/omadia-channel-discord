@@ -1,10 +1,10 @@
 {
   "name": "@omadia/channel-discord",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "main": "dist/plugin.js",
-  "description": "Discord channel for the Omadia harness — discord.js Gateway bot with bot-token auth. Routes Discord DMs, @mentions and the /ask slash command into the Omadia orchestrator.",
+  "description": "Discord channel for the Omadia harness \u2014 discord.js Gateway bot with bot-token auth. Routes Discord DMs, @mentions and the /ask slash command into the Omadia orchestrator.",
   "license": "MIT",
   "homepage": "https://github.com/byte5ai/omadia-channel-discord",
   "repository": {
