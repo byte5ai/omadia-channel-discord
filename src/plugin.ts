@@ -1,206 +1,199 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import * as channelSdk from '@omadia/channel-sdk';
-import {
-  isNoReply,
-  logNoReplyDrop,
-  type ChatAgent,
-  type ChannelHandle,
-  type CoreApi,
-  type IncomingTurn,
-  type SemanticAnswer,
-} from '@omadia/channel-sdk';
+import { type Client, Events, type Guild, type Message } from 'discord.js';
+
+import type { ChannelHandle, CoreApi } from '@omadia/channel-sdk';
 import type { PluginContext } from '@omadia/plugin-api';
 
-import { createAdminRouter } from './adminRouter.js';
-import { DiscordConnection, type GuildResponsePolicy } from './discordConnection.js';
-import { InteractionRegistry } from './interactions.js';
-import { createChannelState } from './state.js';
+import { type AdminStatus, createAdminRouter, type GuildSummary } from './admin/router.js';
+import { fetchAppInfo, InvalidTokenError } from './app-info.js';
+import { registerCommands, registerInGuild } from './commands.js';
+import { buildComponents } from './components.js';
+import { readConfig } from './config.js';
+import { deliverReply } from './deliver.js';
+import { attachListeners, createClient } from './discord-client.js';
+import { DISCORD_CHANNEL_TYPE, messageToTurn } from './inbound.js';
+import { handleInteraction } from './interactions.js';
+import { createPendingStore } from './pending.js';
+import { createTurnRunner } from './turn.js';
 
-/**
- * Channel-plugin entry. The kernel's dynamic channel resolver imports this
- * module and calls the exported `activate(ctx, core)` (ChannelPlugin "shape
- * 1"). We log the Discord bot into the Gateway in the background, mount the
- * status/invite admin UI, and return a handle the kernel closes on
- * deactivate/uninstall.
- */
-export async function activate(ctx: PluginContext, core: CoreApi): Promise<ChannelHandle> {
-  const channelId = ctx.agentId;
+const ADMIN_PREFIX = '/api/discord/admin';
+// Re-send the typing indicator below its ~10s lifetime so it persists on long turns.
+const TYPING_REFRESH_MS = 8000;
 
-  // The bot token is a vault secret collected at install (manifest setup.fields
-  // type:secret). require() throws a clear error if it's missing.
-  const token = await ctx.secrets.require('discord_bot_token');
-
-  const guildPolicy = parseGuildPolicy(ctx.config.get<string>('respond_in_guilds'));
-  const allowDms = ctx.config.get<boolean>('allow_dms') ?? true;
-  const messageContentIntent = ctx.config.get<boolean>('message_content_intent') ?? false;
-  const enableSlashCommand = ctx.config.get<boolean>('enable_slash_command') ?? true;
-  const ignoreBots = ctx.config.get<boolean>('ignore_bots') ?? true;
-  const allowlist = parseAllowlist(ctx.config.get<string>('allowlist') ?? '');
-
-  // Resolve the orchestrator's ChatAgent. Prefers the SDK's getChatAgent()
-  // helper; falls back to the raw 'chatAgent' service lookup so the plugin
-  // still runs on a host whose channel-sdk predates the helper.
-  const agent = resolveChatAgent(ctx);
-  if (!agent) {
-    throw new Error(
-      '@omadia/channel-discord: orchestrator unavailable (getChatAgent) — the orchestrator plugin must be installed and active',
-    );
-  }
-
-  const state = createChannelState();
-  const registry = new InteractionRegistry();
-
-  const conn = new DiscordConnection({
-    channelId,
-    token,
-    log: (level, message, context) => core.log(level, message, context),
-    state,
-    policy: { guildPolicy, allowDms, ignoreBots, allowlist },
-    messageContentIntent,
-    enableSlashCommand,
-    registry,
-    runTurn: (turn) => runTurn(ctx, agent, turn),
-  });
-
-  // Status / invite admin UI. web-ui renders this as an iframe (manifest
-  // `admin_ui_path`); the UI fetches its JSON API with RELATIVE paths so it
-  // resolves through the `/bot-api` rewrite.
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const uiAssetsPath = path.resolve(here, '../assets/admin-ui');
-  const disposeRoutes = ctx.routes.register(
-    '/api/discord-channel/admin',
-    createAdminRouter({ uiAssetsPath, state, smokeMode: ctx.smokeMode }),
-  );
-
-  // Non-blocking — login + ready + slash-command registration can exceed the
-  // 10s activate budget.
-  conn.start();
-
-  core.log('info', 'Discord channel activated — open the admin UI for status + the invite link', {
-    adminUi: '/api/discord-channel/admin/index.html',
-    guildPolicy,
-    allowDms,
-    allowlisted: allowlist.size,
-    slashCommand: enableSlashCommand,
-  });
-
+function guildSummary(g: Guild): GuildSummary {
   return {
-    async close() {
-      disposeRoutes();
-      await conn.close();
-    },
+    id: g.id,
+    name: g.name,
+    memberCount: g.memberCount,
+    iconUrl: g.iconURL({ size: 64 }) ?? undefined,
   };
 }
 
 /**
- * Drive one orchestrator turn. Returns the {@link SemanticAnswer} to render,
- * or null when the orchestrator emitted NO_REPLY (the connection then stays
- * silent for a passive message). Mirrors the WhatsApp channel's fold.
+ * Channel entry point. Mounts the setup-wizard admin UI, then connects in the
+ * background: read the application from the token (id, intents), open the
+ * gateway with exactly the intents the portal allows, register `/ask` per
+ * guild. `activate` never waits on Discord — the 10s budget can't be blown by
+ * a slow login; progress and errors surface in the admin UI.
  */
-async function runTurn(
+export async function activate(
   ctx: PluginContext,
-  defaultAgent: ChatAgent,
-  turn: IncomingTurn,
-): Promise<SemanticAnswer | null> {
-  const guildId = (turn.metadata as { guildId?: string | null } | undefined)?.guildId;
-  // US7 — route to the Agent bound to this Discord channel (per-channel), else
-  // the guild-level binding (guildId), else the platform fallback, else the
-  // default.
-  const agent = resolveAgentForTurn(
-    ctx,
-    'discord',
-    [turn.conversationId, guildId],
-    defaultAgent,
+  core: CoreApi,
+): Promise<ChannelHandle> {
+  const log = (message: string): void => ctx.log(message);
+  const config = await readConfig(ctx);
+
+  const status: AdminStatus = {
+    state: 'connecting',
+    guilds: [],
+    guildPolicy: config.guildPolicy,
+    respondToDms: config.respondToDms,
+    allowlistSize: config.allowlist.size,
+  };
+  const pending = createPendingStore();
+  const runner = createTurnRunner(ctx, log);
+  const typingTimers = new Set<ReturnType<typeof setInterval>>();
+  let client: Client | null = null;
+  let closed = false;
+
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  core.registerRouter(
+    ctx.agentId,
+    ADMIN_PREFIX,
+    createAdminRouter({
+      status,
+      uiAssetsPath: path.resolve(here, '../assets/admin-ui'),
+    }),
   );
-  const answer = await agent.chat({
-    userMessage: turn.text,
-    sessionScope: `discord:${turn.conversationId}`,
-    userId: turn.userRef.id,
-  });
-  if (isNoReply(answer)) {
-    logNoReplyDrop(turn.channelId, { conversationId: turn.conversationId });
-    return null;
-  }
-  return answer;
-}
 
-/**
- * Resolve the orchestrator's {@link ChatAgent}. Prefers the SDK helper
- * `getChatAgent(ctx)` (the blessed, typed path); falls back to the raw
- * service-registry lookup so the plugin also runs on a host whose
- * `@omadia/channel-sdk` predates the helper. Accessed via the namespace so a
- * missing export is just `undefined` at runtime rather than a module-load
- * error.
- */
-function resolveChatAgent(ctx: PluginContext): ChatAgent | undefined {
-  const helper = (channelSdk as { getChatAgent?: (c: PluginContext) => ChatAgent | undefined })
-    .getChatAgent;
-  if (helper) return helper(ctx);
-  return ctx.services.get<{ agent: ChatAgent }>('chatAgent')?.agent;
-}
+  async function handleMessage(c: Client, message: Message): Promise<void> {
+    const botUserId = c.user?.id;
+    if (!botUserId) return;
 
-/**
- * Structural view of the kernel's `channelResolver@1` — the per-binding router
- * published by the multi-orchestrator runtime. Consumed directly (not via a
- * new SDK export) so this plugin keeps running on hosts whose
- * `@omadia/channel-sdk` predates the US7 helper; the service itself is what the
- * helper wraps.
- */
-interface ChannelBindingResolver {
-  resolve(
-    channelType: string,
-    channelKey: string,
-  ): { readonly decision: 'bound' | 'fallback' | 'reject'; readonly chatAgent?: ChatAgent };
-}
+    const turn = messageToTurn(message, {
+      channelId: ctx.agentId,
+      botUserId,
+      config,
+    });
+    if (!turn) return;
+    status.lastTurnAt = new Date().toISOString();
 
-const CHANNEL_RESOLVER_SERVICE = 'channelResolver';
+    const channel = message.channel;
+    if (!channel.isSendable()) return;
 
-/**
- * US7 per-turn Agent resolution. Routes a turn to the Agent the operator bound
- * to its `(channelType, channelKey)` via `channelResolver@1`, falling back to
- * `defaultAgent` when no binding (and no platform fallback Agent) matches OR
- * the resolver is not published (single-Agent / pre-US7 host). `channelKeys`
- * are tried most-specific first: a `bound` decision wins immediately, a
- * `fallback` is remembered and used only if no key is explicitly bound.
- * Resolver errors are swallowed (default agent used) so a hiccup never drops a
- * turn. Without this, every turn reaches the shared, fully-tooled singleton
- * regardless of which Agent the channel is bound to.
- */
-function resolveAgentForTurn(
-  ctx: PluginContext,
-  channelType: string,
-  channelKeys: ReadonlyArray<string | null | undefined>,
-  defaultAgent: ChatAgent,
-): ChatAgent {
-  const resolver = ctx.services.get<ChannelBindingResolver>(CHANNEL_RESOLVER_SERVICE);
-  if (!resolver) return defaultAgent;
-  let fallback: ChatAgent | undefined;
-  try {
-    for (const key of channelKeys) {
-      if (!key) continue;
-      const decision = resolver.resolve(channelType, key);
-      if (decision.decision === 'bound' && decision.chatAgent) return decision.chatAgent;
-      if (decision.decision === 'fallback' && decision.chatAgent) fallback ??= decision.chatAgent;
+    void channel.sendTyping().catch(() => undefined);
+    const typingTimer = setInterval(() => {
+      void channel.sendTyping().catch(() => undefined);
+    }, TYPING_REFRESH_MS);
+    typingTimers.add(typingTimer);
+
+    try {
+      const answer = await runner.runTurn(turn);
+      if (!answer) return; // NO_REPLY — stay silent.
+      const rows = buildComponents(answer, pending, {
+        conversationId: turn.conversationId,
+        channelType: turn.channelType ?? DISCORD_CHANNEL_TYPE,
+        channelKey: turn.channelKey ?? turn.conversationId,
+        guildId: message.guildId ?? undefined,
+      });
+      await deliverReply(message, answer, rows, log);
+    } finally {
+      clearInterval(typingTimer);
+      typingTimers.delete(typingTimer);
     }
-  } catch {
-    return defaultAgent;
   }
-  return fallback ?? defaultAgent;
-}
 
-/** Validate the guild-response policy enum, defaulting to 'mention'. */
-function parseGuildPolicy(raw: string | undefined): GuildResponsePolicy {
-  return raw === 'all' || raw === 'off' || raw === 'mention' ? raw : 'mention';
-}
+  async function connect(): Promise<void> {
+    const app = await fetchAppInfo(config.botToken);
+    if (closed) return;
+    status.app = app;
 
-/** Parse the comma-separated allowlist into a set of trimmed Discord snowflake ids. */
-function parseAllowlist(raw: string): Set<string> {
-  return new Set(
-    raw
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0),
-  );
+    const c = createClient({ messageContent: app.messageContent });
+    client = c;
+    const syncGuilds = (): void => {
+      if (c.isReady()) status.guilds = [...c.guilds.cache.values()].map(guildSummary);
+    };
+
+    attachListeners(c, {
+      async onReady(ready) {
+        status.state = 'ready';
+        status.botTag = ready.user.tag;
+        status.botId = ready.user.id;
+        status.botAvatarUrl = ready.user.displayAvatarURL({ size: 128 });
+        status.readyAt = new Date().toISOString();
+        delete status.lastError;
+        syncGuilds();
+        log(
+          `ready as ${ready.user.tag} in ${status.guilds.length} guild(s); ` +
+            `message content intent ${app.messageContent ? 'on' : 'off'}`,
+        );
+        await registerCommands(ready, log);
+      },
+      onMessage(message) {
+        void handleMessage(c, message).catch((err) =>
+          log(`message handling failed: ${(err as Error).message}`),
+        );
+      },
+      onInteraction(interaction) {
+        if (interaction.isRepliable()) status.lastTurnAt = new Date().toISOString();
+        void handleInteraction(interaction, {
+          channelId: ctx.agentId,
+          config,
+          pending,
+          runner,
+          log,
+        }).catch((err) => log(`interaction handling failed: ${(err as Error).message}`));
+      },
+      onError(error) {
+        status.lastError = (error as Error).message;
+        log(`gateway error: ${(error as Error).message}`);
+      },
+      onDisconnect() {
+        if (status.state === 'ready') status.state = 'disconnected';
+      },
+      onResume() {
+        status.state = 'ready';
+      },
+      log,
+    });
+
+    // Fresh invites show up in the wizard immediately and get /ask right away.
+    c.on(Events.GuildCreate, (guild) => {
+      syncGuilds();
+      void registerInGuild(guild, log);
+    });
+    c.on(Events.GuildDelete, syncGuilds);
+
+    await c.login(config.botToken);
+  }
+
+  void connect().catch((err: unknown) => {
+    status.state = 'error';
+    if (err instanceof InvalidTokenError) status.tokenInvalid = true;
+    status.lastError = (err as Error).message;
+    log(`connect failed: ${status.lastError}`);
+  });
+
+  log('activated; connecting to Discord in the background');
+
+  return {
+    async close(): Promise<void> {
+      closed = true;
+      for (const timer of typingTimers) clearInterval(timer);
+      typingTimers.clear();
+      pending.dispose();
+      runner.dispose();
+      await client
+        ?.destroy()
+        .then(() => undefined)
+        .catch(() => undefined);
+      // Our own REST agent (see createClient) — its sockets outlive the client.
+      await client?.rest.agent
+        ?.close()
+        .then(() => undefined)
+        .catch(() => undefined);
+    },
+  };
 }

@@ -1,52 +1,114 @@
-import { ChannelType, type Message } from 'discord.js';
+import type { Attachment, Collection, Message } from 'discord.js';
 
-import type { IncomingTurn } from '@omadia/channel-sdk';
+import type { IncomingAttachment, IncomingTurn } from '@omadia/channel-sdk';
 
-/** A Discord message is a DM when it has no guild (1:1 with the bot). */
-export function isDirectMessage(msg: Message): boolean {
-  return !msg.guild || msg.channel.type === ChannelType.DM;
-}
+import { type DiscordConfig, isAllowlisted } from './config.js';
+
+/** The platform `channelType` selector for per-binding routing (US7). */
+export const DISCORD_CHANNEL_TYPE = 'discord';
 
 /**
- * Pull the routable plain text out of a Discord message. The leading bot
- * mention (`<@id>` / `<@!id>`) is stripped so the orchestrator sees the bare
- * prompt ("@Omadia what's the weather" → "what's the weather"). Returns
- * `undefined` for empty/whitespace-only content (e.g. an attachment-only post,
- * or a guild message whose content was redacted because the privileged
- * Message-Content intent is off and the bot wasn't addressed).
+ * The most specific operator-bindable key: the Discord channel id (a DM is a
+ * channel too). The guild id travels in `metadata.guildId` and is tried next
+ * (see `turn.ts`) — the same keys 0.1.5 used, so its bindings carry over.
  */
-export function extractText(msg: Message, botUserId: string): string | undefined {
-  const stripped = msg.content
+export function channelKeyFor(channelId: string): string {
+  return channelId;
+}
+
+export interface InboundDeps {
+  /** The platform channel id (`ctx.agentId`). */
+  readonly channelId: string;
+  /** The bot's own user id, for mention detection + loop avoidance. */
+  readonly botUserId: string;
+  readonly config: DiscordConfig;
+}
+
+function inferKind(mediaType: string): IncomingAttachment['kind'] {
+  if (mediaType.startsWith('image/')) return 'image';
+  if (mediaType.startsWith('audio/')) return 'audio';
+  if (mediaType.startsWith('video/')) return 'video';
+  return 'file';
+}
+
+function mapAttachments(
+  attachments: Collection<string, Attachment>,
+): IncomingAttachment[] {
+  return [...attachments.values()].map((a) => {
+    const mediaType = a.contentType ?? 'application/octet-stream';
+    const att: IncomingAttachment = {
+      kind: inferKind(mediaType),
+      // Discord CDN URLs are publicly fetchable → the orchestrator fetches
+      // them itself; no need to pre-fetch bytes.
+      url: a.url,
+      mediaType,
+      sizeBytes: a.size,
+    };
+    if (a.name) att.name = a.name;
+    return att;
+  });
+}
+
+function stripMention(content: string, botUserId: string): string {
+  return content
     .replace(new RegExp(`<@!?${botUserId}>`, 'g'), ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return stripped.length > 0 ? stripped : undefined;
 }
 
-/** True when this guild message directly @mentions the bot user (not @everyone/@here). */
-export function mentionsBot(msg: Message, botUserId: string): boolean {
-  return msg.mentions.users.has(botUserId);
-}
+/**
+ * Translate a Discord message into an `IncomingTurn`, applying the channel's
+ * gating rules (0.1.5's). Returns `null` when the message should be ignored: a
+ * bot/system author (prevents reply loops), a DM while `allow_dms` is off, a
+ * guild message under `respond_in_guilds: off` or — under `mention` — one that
+ * doesn't @mention the bot, an author/guild outside a non-empty `allowlist`,
+ * or an empty message (no text and no attachments).
+ */
+export function messageToTurn(
+  message: Message,
+  deps: InboundDeps,
+): IncomingTurn | null {
+  const { config, botUserId, channelId } = deps;
 
-/** Translate a native Discord message into the core `IncomingTurn` shape. */
-export function buildIncomingTurn(channelId: string, msg: Message, text: string): IncomingTurn {
-  const dm = isDirectMessage(msg);
-  const displayName = msg.author.globalName ?? msg.author.username;
-  return {
+  if (message.author.bot || message.system) return null;
+
+  const guildId = message.guildId;
+  const isDm = guildId === null;
+
+  if (isDm) {
+    if (!config.respondToDms) return null;
+  } else {
+    if (config.guildPolicy === 'off') return null;
+    // A reply to one of the bot's messages pings it by default, so replies
+    // count as mentions and keep a conversation going without "@Bot".
+    if (config.guildPolicy === 'mention' && !message.mentions.users.has(botUserId)) {
+      return null;
+    }
+  }
+  if (!isAllowlisted(config, message.author.id, guildId)) return null;
+
+  const text = stripMention(message.content, botUserId);
+  const attachments = mapAttachments(message.attachments);
+  if (text.length === 0 && attachments.length === 0) return null;
+
+  const turn: IncomingTurn = {
     channelId,
-    conversationId: msg.channelId,
+    conversationId: message.channelId,
+    channelType: DISCORD_CHANNEL_TYPE,
+    channelKey: channelKeyFor(message.channelId),
     userRef: {
       kind: 'discord-user',
-      id: msg.author.id,
-      ...(displayName ? { displayName } : {}),
+      id: message.author.id,
+      displayName: message.member?.displayName ?? message.author.username,
     },
     text,
     metadata: {
-      isDm: dm,
-      guildId: msg.guildId ?? null,
-      discordChannelId: msg.channelId,
-      messageId: msg.id,
+      guildId: guildId ?? undefined,
+      channelId: message.channelId,
+      messageId: message.id,
     },
-    rawEvent: msg,
+    rawEvent: message,
   };
+  if (attachments.length > 0) turn.attachments = attachments;
+  return turn;
 }

@@ -3,187 +3,234 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Discord — Omadia</title>
-    <!-- Harness baseline stylesheet (byte5 tokens, light/dark, .harness-* helpers). -->
+    <title>Discord Channel · Einrichtung</title>
+    <!-- Harness baseline stylesheet: byte5 tokens + .harness-* helpers. -->
     <link rel="stylesheet" href="/bot-api/_harness/admin-ui.css" />
   </head>
-  <body>
+  <body class="harness-admin">
+    <h1>Discord Channel</h1>
+    <p class="harness-subtitle">
+      Drei Schritte, dann antwortet dein Agent in Discord.
+    </p>
+
     <!-- #region builder:admin-ui-body -->
     <style>
-      .dc-wrap { max-width: var(--harness-iframe-max, 812px); }
-      .dc-status-row {
-        display: flex;
-        align-items: center;
-        gap: 0.6rem;
-        margin: 1rem 0;
-      }
-      .dc-dot {
-        width: 0.7rem;
-        height: 0.7rem;
-        border-radius: var(--radius-pill, 9999px);
-        background: var(--fg-subtle);
-        flex: none;
-      }
-      .dc-dot[data-state='connected'] { background: var(--success); }
-      .dc-dot[data-state='connecting'],
-      .dc-dot[data-state='starting'] { background: var(--warning); }
-      .dc-dot[data-state='error'] { background: var(--danger); }
-      .dc-state-label { font-weight: 600; color: var(--fg-strong); }
-      .dc-card {
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md, 14px);
+      /* .harness-btn sets display, which would otherwise beat the attribute. */
+      [hidden] { display: none !important; }
+      .dc-steps { list-style: none; padding: 0; margin: 1rem 0 2rem; display: grid; gap: 0.75rem; }
+      .dc-step {
+        display: grid;
+        grid-template-columns: 2rem 1fr;
+        gap: 0.75rem;
         background: var(--bg-elevated);
-        padding: 1.25rem;
-        margin: 1rem 0;
-      }
-      .dc-me { font-family: var(--font-mono); color: var(--fg-strong); }
-      .dc-invite-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
-      .dc-invite-url {
-        flex: 1 1 18rem;
-        min-width: 0;
-        font-family: var(--font-mono);
-        font-size: 0.8rem;
-        padding: 0.5rem 0.6rem;
         border: 1px solid var(--border);
-        border-radius: var(--radius-sm, 8px);
-        background: var(--bg-base);
-        color: var(--fg-muted);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        border-radius: var(--radius-sm);
+        padding: 1rem;
       }
-      .dc-steps { margin: 0.75rem 0 0; color: var(--fg-muted); }
-      .dc-steps li { margin: 0.35rem 0; }
-      .dc-meta { color: var(--fg-muted); font-size: 0.85rem; margin-top: 0.5rem; }
-      .dc-badge {
-        display: inline-block;
-        padding: 0.1rem 0.5rem;
-        border-radius: var(--radius-pill, 9999px);
-        font-size: 0.75rem;
-        background: var(--bg-base);
-        border: 1px solid var(--border);
+      .dc-step[data-state='todo'] { opacity: 0.6; }
+      .dc-step[data-state='active'] { border-color: var(--accent); }
+      .dc-num {
+        width: 2rem; height: 2rem; border-radius: var(--radius-pill);
+        display: grid; place-items: center; font-weight: 600;
+        border: 2px solid var(--border); color: var(--fg-muted);
       }
+      .dc-step[data-state='active'] .dc-num { border-color: var(--accent); color: var(--accent); }
+      .dc-step[data-state='done'] .dc-num { background: var(--success); border-color: var(--success); color: #fff; }
+      .dc-step[data-state='error'] .dc-num { background: var(--danger); border-color: var(--danger); color: #fff; }
+      .dc-step h2 { margin: 0.2rem 0 0.4rem; font-size: 1.05rem; }
+      .dc-step p { margin: 0.3rem 0; }
+      .dc-meta { color: var(--fg-muted); font-size: 0.9em; }
+      .dc-who { display: flex; align-items: center; gap: 0.6rem; margin: 0.4rem 0; }
+      .dc-who img { width: 2rem; height: 2rem; border-radius: var(--radius-pill); }
+      .dc-guilds { list-style: none; padding: 0; margin: 0.6rem 0 0; display: grid; gap: 0.35rem; }
+      .dc-guilds li { display: flex; align-items: center; gap: 0.5rem; }
+      .dc-guilds img, .dc-guilds .dc-ph { width: 1.5rem; height: 1.5rem; border-radius: 0.4rem; background: var(--border); }
+      .dc-try { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+      .dc-try li { margin: 0.2rem 0; }
+      code { font-family: var(--font-mono); background: var(--bg); padding: 0.05rem 0.3rem; border-radius: 0.25rem; }
+      .dc-banner { border-radius: var(--radius-sm); padding: 0.75rem 1rem; margin: 0 0 0.75rem; border: 1px solid; }
+      .dc-banner--error { border-color: var(--danger); color: var(--danger); }
+      .dc-banner--warning { border-color: var(--warning); color: var(--fg); }
+      .dc-banner a { margin-left: 0.4rem; font-weight: 600; }
+      .dc-settings { width: 100%; }
+      .dc-settings td:first-child { color: var(--fg-muted); width: 45%; }
+      .dc-ok { color: var(--success); font-weight: 600; }
+      .dc-off { color: var(--fg-muted); font-weight: 600; }
     </style>
 
-    <div class="dc-wrap">
-      <h1>Discord</h1>
-      <p class="harness-subtitle">
-        Verbinde diesen Bot mit Discord. Der Bot meldet sich mit dem beim Install
-        hinterlegten Token am Gateway an — danach lädst du ihn über den
-        Einladungs-Link auf deinen Server ein.
-      </p>
+    <div id="err" class="harness-banner-error" role="alert" hidden></div>
+    <div id="warnings"></div>
 
-      <div id="global-err" class="harness-banner-error" role="alert" hidden></div>
-
-      <div class="dc-status-row">
-        <span id="dot" class="dc-dot" data-state="starting" aria-hidden="true"></span>
-        <span id="state-label" class="dc-state-label">Lade…</span>
-      </div>
-
-      <!-- Connected -->
-      <section id="connected-section" hidden>
-        <div class="harness-banner-info" role="status">
-          Angemeldet als <span id="me" class="dc-me">—</span>
+    <ol class="dc-steps">
+      <li class="dc-step" id="step-token" data-state="active">
+        <span class="dc-num">1</span>
+        <div>
+          <h2>Mit Discord verbinden</h2>
+          <div id="token-body"><p class="dc-meta">Verbinde mit Discord…</p></div>
         </div>
-
-        <div class="dc-card">
-          <b>Bot zu einem Server hinzufügen</b>
-          <p class="dc-meta">Öffne den Einladungs-Link und wähle den Server aus, auf dem der Bot antworten soll.</p>
-          <div class="dc-invite-row">
-            <span id="invite-url" class="dc-invite-url">—</span>
-            <button id="copy-btn" class="harness-btn" type="button">Link kopieren</button>
-            <a id="invite-open" class="harness-btn" target="_blank" rel="noopener" href="#">Öffnen</a>
-          </div>
-          <ol class="dc-steps">
-            <li>Einladungs-Link öffnen.</li>
-            <li>Server auswählen und <b>Autorisieren</b>.</li>
-            <li>Bot per Direktnachricht oder mit <span class="dc-badge">@Erwähnung</span> / <span class="dc-badge">/ask</span> ansprechen.</li>
-          </ol>
-          <p class="dc-meta">
-            Aktiv in <span id="guild-count">0</span> Server(n) ·
-            Slash-Command <span id="slash-status" class="dc-badge">—</span>
-          </p>
+      </li>
+      <li class="dc-step" id="step-invite" data-state="todo">
+        <span class="dc-num">2</span>
+        <div>
+          <h2>Bot auf deinen Server holen</h2>
+          <p>Wähle in Discord den Server aus und bestätige. Der Server erscheint dann hier.</p>
+          <p><a id="invite" class="harness-btn harness-btn--primary" href="#" target="_blank" rel="noopener" hidden>Bot zu Discord hinzufügen</a></p>
+          <ul id="guilds" class="dc-guilds"></ul>
         </div>
-      </section>
+      </li>
+      <li class="dc-step" id="step-try" data-state="todo">
+        <span class="dc-num">3</span>
+        <div>
+          <h2>Ausprobieren</h2>
+          <ul class="dc-try" id="try-list"></ul>
+          <p id="try-done" class="dc-meta" hidden></p>
+        </div>
+      </li>
+    </ol>
 
-      <!-- Connecting / error interstitials -->
-      <section id="info-section" hidden>
-        <p id="info-text" class="harness-empty"></p>
-      </section>
-    </div>
+    <h2>Einstellungen</h2>
+    <table class="harness-table dc-settings">
+      <tbody id="settings"></tbody>
+    </table>
+    <p class="dc-meta">
+      Verhalten in Servern, Direktnachrichten und zugelassene IDs änderst du in
+      den Einstellungen dieses Plugins.
+    </p>
 
     <script>
-      const POLL_MS = 2500;
-      const el = (id) => document.getElementById(id);
-
-      const STATE_LABELS = {
-        starting: 'Starte…',
-        connecting: 'Verbinde mit Discord…',
-        connected: 'Verbunden',
-        error: 'Fehler',
+      const GUILD_POLICY_LABEL = {
+        mention: 'nur auf Erwähnung oder Antwort',
+        all: 'auf jede Nachricht',
+        off: 'gar nicht (nur Direktnachrichten)',
       };
 
-      function show(id, visible) {
-        el(id).hidden = !visible;
+      function esc(value) {
+        return String(value ?? '').replace(
+          /[&<>"']/g,
+          (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+        );
       }
 
-      function render(s) {
-        el('dot').dataset.state = s.status;
-        el('state-label').textContent = STATE_LABELS[s.status] || s.status;
+      function setStep(id, state) {
+        document.getElementById(id).dataset.state = state;
+      }
 
-        const err = el('global-err');
-        if (s.lastError) {
-          err.textContent = s.lastError;
-          err.hidden = false;
-        } else {
+      function renderWarnings(warnings) {
+        document.getElementById('warnings').innerHTML = warnings
+          .map(
+            (w) =>
+              '<div class="dc-banner dc-banner--' + esc(w.level) + '">' +
+              esc(w.text) +
+              (w.linkUrl
+                ? '<a href="' + esc(w.linkUrl) + '" target="_blank" rel="noopener">' + esc(w.linkLabel || 'Öffnen') + ' ↗</a>'
+                : '') +
+              '</div>',
+          )
+          .join('');
+      }
+
+      function renderToken(d) {
+        const body = document.getElementById('token-body');
+        if (d.state === 'error') {
+          setStep('step-token', 'error');
+          body.innerHTML = '<p>' + esc(d.lastError || 'Verbindung fehlgeschlagen.') + '</p>';
+          return false;
+        }
+        if (!d.bot) {
+          setStep('step-token', 'active');
+          body.innerHTML = '<p class="dc-meta">Verbinde mit Discord…</p>';
+          return false;
+        }
+        setStep('step-token', 'done');
+        body.innerHTML =
+          '<div class="dc-who">' +
+          (d.bot.avatarUrl ? '<img alt="" src="' + esc(d.bot.avatarUrl) + '" />' : '') +
+          '<div><strong>' + esc(d.app ? d.app.name : d.bot.tag) + '</strong>' +
+          '<div class="dc-meta">' + esc(d.bot.tag) +
+          (d.state === 'disconnected' ? ' · Verbindung unterbrochen, verbinde neu…' : ' · online') +
+          '</div></div></div>';
+        return true;
+      }
+
+      function renderInvite(d, tokenDone) {
+        const a = document.getElementById('invite');
+        a.hidden = !(d.inviteUrl && tokenDone);
+        if (!a.hidden) {
+          a.href = d.inviteUrl;
+          a.textContent = d.guilds.length ? 'Weiteren Server hinzufügen' : 'Bot zu Discord hinzufügen';
+        }
+        document.getElementById('guilds').innerHTML = d.guilds
+          .map(
+            (g) =>
+              '<li>' +
+              (g.iconUrl ? '<img alt="" src="' + esc(g.iconUrl) + '" />' : '<span class="dc-ph"></span>') +
+              '<span>' + esc(g.name) + '</span>' +
+              '<span class="dc-meta">' + esc(g.memberCount) + ' Mitglieder</span></li>',
+          )
+          .join('');
+        const done = d.guilds.length > 0;
+        setStep('step-invite', done ? 'done' : tokenDone ? 'active' : 'todo');
+        return done;
+      }
+
+      function renderTry(d, inviteDone) {
+        const name = d.bot ? '@' + d.bot.tag.replace(/#0$/, '') : '@Bot';
+        const items = [
+          'In einem Kanal: <code>' + esc(name) + ' Was kannst du?</code>',
+          'Oder den Slash-Command <code>' + esc(d.slashCommand) + '</code>',
+        ];
+        if (d.respondToDms) items.push('Oder dem Bot eine Direktnachricht schreiben');
+        if (d.guildPolicy === 'all') items[0] = 'In einem Kanal einfach eine Nachricht schreiben';
+        if (d.guildPolicy === 'off') items.splice(0, 2);
+        document.getElementById('try-list').innerHTML = items.map((i) => '<li>' + i + '</li>').join('');
+
+        const done = Boolean(d.lastTurnAt);
+        const doneEl = document.getElementById('try-done');
+        doneEl.hidden = !done;
+        if (done) {
+          doneEl.textContent =
+            'Letzte Anfrage ' + new Date(d.lastTurnAt).toLocaleString('de-DE') + '. Alles eingerichtet.';
+        }
+        setStep('step-try', done ? 'done' : inviteDone ? 'active' : 'todo');
+      }
+
+      function renderSettings(d) {
+        const intent = d.app
+          ? d.app.messageContent
+            ? '<span class="dc-ok">aktiv</span>'
+            : '<span class="dc-off">aus</span> <span class="dc-meta">· nur nötig, wenn der Bot ohne Erwähnung antworten soll</span>'
+          : '…';
+        const rows = [
+          ['Antwortet in Kanälen', GUILD_POLICY_LABEL[d.guildPolicy] || esc(d.guildPolicy)],
+          ['Direktnachrichten', d.respondToDms ? 'ja' : 'nein'],
+          ['Zugelassene IDs', d.allowlistSize > 0 ? esc(d.allowlistSize) + ' (nur diese Nutzer/Server)' : 'alle'],
+          ['Slash-Command', '<code>' + esc(d.slashCommand) + '</code>'],
+          ['Message Content Intent', intent],
+        ];
+        document.getElementById('settings').innerHTML = rows
+          .map((r) => '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>')
+          .join('');
+      }
+
+      async function refresh() {
+        const err = document.getElementById('err');
+        try {
+          const d = await fetch('api/status').then((r) => r.json());
+          if (!d.ok) throw new Error(d.error || 'Status nicht verfügbar');
           err.hidden = true;
-        }
-
-        const connected = s.status === 'connected';
-        show('connected-section', connected);
-        if (connected && s.me) {
-          el('me').textContent = s.me.tag || s.me.username || s.me.id;
-          el('guild-count').textContent = String(s.me.guildCount ?? 0);
-        }
-        if (connected && s.inviteUrl) {
-          el('invite-url').textContent = s.inviteUrl;
-          el('invite-open').href = s.inviteUrl;
-        }
-        el('slash-status').textContent = s.slashCommandReady ? '/ask aktiv' : 'aus';
-
-        const interstitial = (s.status === 'connecting' || s.status === 'starting');
-        show('info-section', interstitial);
-        if (interstitial) el('info-text').textContent = STATE_LABELS[s.status] || '…';
-      }
-
-      el('copy-btn').addEventListener('click', async () => {
-        const url = el('invite-url').textContent;
-        if (!url || url === '—') return;
-        try {
-          await navigator.clipboard.writeText(url);
-          const btn = el('copy-btn');
-          const prev = btn.textContent;
-          btn.textContent = 'Kopiert ✓';
-          setTimeout(() => (btn.textContent = prev), 1500);
-        } catch {
-          /* clipboard blocked (no https / no permission) — the link is still selectable */
-        }
-      });
-
-      async function poll() {
-        try {
-          const data = await fetch('api/status', { cache: 'no-store' }).then((r) => r.json());
-          if (!data.ok) throw new Error(data.error || 'Statusabfrage fehlgeschlagen');
-          render(data);
+          renderWarnings(d.warnings || []);
+          const tokenDone = renderToken(d);
+          const inviteDone = renderInvite(d, tokenDone);
+          renderTry(d, inviteDone);
+          renderSettings(d);
         } catch (e) {
-          const err = el('global-err');
-          err.textContent = e.message;
           err.hidden = false;
+          err.textContent = e.message;
         }
       }
 
-      poll();
-      setInterval(poll, POLL_MS);
+      refresh();
+      setInterval(refresh, 3000);
     </script>
     <!-- #endregion -->
   </body>

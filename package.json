@@ -1,35 +1,42 @@
 {
   "name": "@omadia/channel-discord",
-  "version": "0.1.5",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "main": "dist/plugin.js",
-  "description": "Discord channel for the Omadia harness \u2014 discord.js Gateway bot with bot-token auth. Routes Discord DMs, @mentions and the /ask slash command into the Omadia orchestrator.",
+  "description": "Discord bot channel for the Omadia harness platform — token-only setup, Components V2 answers with tables rendered as images (+ CSV), interactive buttons/select-menus and a setup-wizard admin UI.",
   "license": "MIT",
   "homepage": "https://github.com/byte5ai/omadia-channel-discord",
   "repository": {
     "type": "git",
     "url": "https://github.com/byte5ai/omadia-channel-discord.git"
   },
+  "workspaces": [
+    "packages/table-render"
+  ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
     "build": "node scripts/build-zip.mjs",
+    "typecheck": "tsc --noEmit",
+    "dev": "node scripts/build-zip.mjs && node dev/run.mjs",
+    "preview": "node dev/preview.mjs",
     "clean": "rm -rf dist out"
   },
   "dependencies": {
-    "discord.js": "^14.16.0"
+    "@omadia/table-render": "*",
+    "discord.js": "14.27.0",
+    "undici": "6.29.1"
   },
   "peerDependencies": {
     "@omadia/channel-sdk": "*",
     "@omadia/plugin-api": "*",
-    "express": "^5.0.0"
+    "express": "^5.1.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "@types/node": "^22.0.0",
-    "esbuild": "^0.24.0",
-    "express": "^5.0.0",
-    "typescript": "^5.6.0"
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.2",
+    "express": "^5.1.0",
+    "typescript": "^5.7.2"
   },
   "engines": {
     "node": ">=20"

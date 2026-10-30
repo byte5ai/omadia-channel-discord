@@ -1,51 +1,197 @@
-/**
- * Bounded registry mapping a Discord button `custom_id` to the prompt text it
- * should replay as a new user turn. Discord caps `custom_id` at 100 chars, and
- * a follow-up / choice label can be longer than that, so we never encode the
- * prompt into the id itself — we mint a short opaque id and look the payload
- * back up when the button is clicked.
- *
- * The map is purely in-memory and ephemeral (it does not survive a restart);
- * a stale button click after a redeploy simply finds nothing and is answered
- * with a gentle "expired" notice by the connection. Entries are evicted FIFO
- * once the map grows past {@link MAX_ENTRIES}.
- */
+import {
+  type ChatInputCommandInteraction,
+  type Interaction,
+  MessageFlags,
+  type RepliableInteraction,
+} from 'discord.js';
 
-export interface PendingInteraction {
-  /** The conversation (channel) the button belongs to — guards cross-chat replay. */
-  conversationId: string;
-  /** Text to feed the orchestrator as if the user had typed it. */
-  prompt: string;
+import type { IncomingTurn } from '@omadia/channel-sdk';
+
+import { buildComponents, CUSTOM_ID_PREFIX } from './components.js';
+import { type DiscordConfig, isAllowlisted, SLASH_COMMAND_NAME } from './config.js';
+import { deliverInteraction } from './deliver.js';
+import { channelKeyFor, DISCORD_CHANNEL_TYPE } from './inbound.js';
+import type { PendingStore } from './pending.js';
+import type { TurnRunner } from './turn.js';
+
+const EXPIRED_TEXT =
+  'Diese Auswahl ist abgelaufen. Bitte stelle die Frage erneut.';
+const ERROR_TEXT = 'Es ist ein Fehler aufgetreten. Bitte versuche es erneut.';
+const DENIED_TEXT = 'Dieser Bot ist hier nicht für dich freigeschaltet.';
+
+export interface InteractionDeps {
+  /** The platform channel id (`ctx.agentId`). */
+  readonly channelId: string;
+  readonly config: DiscordConfig;
+  readonly pending: PendingStore;
+  readonly runner: TurnRunner;
+  readonly log: (message: string) => void;
 }
 
-const MAX_ENTRIES = 1_000;
-const CUSTOM_ID_PREFIX = 'omadia';
+function displayNameOf(user: { globalName: string | null; username: string }): string {
+  return user.globalName ?? user.username;
+}
 
-export class InteractionRegistry {
-  private readonly entries = new Map<string, PendingInteraction>();
-  private seq = 0;
+function buildSlashTurn(
+  channelId: string,
+  query: string,
+  interaction: ChatInputCommandInteraction,
+): IncomingTurn {
+  const guildId = interaction.guildId;
+  return {
+    channelId,
+    conversationId: interaction.channelId,
+    channelType: DISCORD_CHANNEL_TYPE,
+    channelKey: channelKeyFor(interaction.channelId),
+    userRef: {
+      kind: 'discord-user',
+      id: interaction.user.id,
+      displayName: displayNameOf(interaction.user),
+    },
+    text: query,
+    metadata: {
+      guildId: guildId ?? undefined,
+      channelId: interaction.channelId,
+      command: interaction.commandName,
+    },
+  };
+}
 
-  /** Register a payload and return the `custom_id` to put on the button. */
-  register(payload: PendingInteraction): string {
-    const id = `${CUSTOM_ID_PREFIX}:${(this.seq++).toString(36)}`;
-    this.entries.set(id, payload);
-    if (this.entries.size > MAX_ENTRIES) {
-      // Map preserves insertion order — drop the oldest.
-      const oldest = this.entries.keys().next().value;
-      if (oldest !== undefined) this.entries.delete(oldest);
+/** Resolve a clicked button / picked select option back into a turn. */
+function resolveComponentTurn(
+  interaction: Extract<Interaction, { customId: string }>,
+  deps: InteractionDeps,
+): IncomingTurn | null {
+  const key = interaction.customId.slice(CUSTOM_ID_PREFIX.length + 1);
+  const entry = deps.pending.get(key);
+  if (!entry) return null;
+
+  let text: string;
+  if (entry.kind === 'submit') {
+    text = entry.text;
+  } else {
+    const token = interaction.isStringSelectMenu()
+      ? interaction.values[0]
+      : undefined;
+    const resolved = token ? entry.options[token] : undefined;
+    if (!resolved) return null;
+    text = resolved;
+  }
+
+  return {
+    channelId: deps.channelId,
+    conversationId: entry.turn.conversationId,
+    channelType: entry.turn.channelType,
+    channelKey: entry.turn.channelKey,
+    userRef: {
+      kind: 'discord-user',
+      id: interaction.user.id,
+      displayName: displayNameOf(interaction.user),
+    },
+    text,
+    metadata: { via: 'component', guildId: entry.turn.guildId },
+  };
+}
+
+/** Render an answer back onto a deferred interaction (editReply + follow-ups). */
+async function respond(
+  interaction: RepliableInteraction,
+  turn: IncomingTurn,
+  answer: Awaited<ReturnType<TurnRunner['runTurn']>>,
+  deps: InteractionDeps,
+): Promise<void> {
+  if (!answer) {
+    // NO_REPLY — remove the "thinking…" placeholder.
+    await interaction.deleteReply().catch(() => undefined);
+    return;
+  }
+  const components = buildComponents(answer, deps.pending, {
+    conversationId: turn.conversationId,
+    channelType: turn.channelType ?? DISCORD_CHANNEL_TYPE,
+    channelKey: turn.channelKey ?? turn.conversationId,
+    guildId: (turn.metadata as { guildId?: string } | undefined)?.guildId,
+  });
+  await deliverInteraction(interaction, answer, components, deps.log);
+}
+
+async function fail(
+  interaction: RepliableInteraction,
+  deps: InteractionDeps,
+  err: unknown,
+): Promise<void> {
+  deps.log(`interaction failed: ${(err as Error).message}`);
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(ERROR_TEXT);
+    } else {
+      await interaction.reply({ content: ERROR_TEXT, flags: MessageFlags.Ephemeral });
     }
-    return id;
+  } catch {
+    // Nothing more we can do.
+  }
+}
+
+/**
+ * The same gate messages pass (see `messageToTurn`), so `/ask` and buttons
+ * can't route around `allow_dms`, `respond_in_guilds: off` or the allowlist.
+ */
+function permitted(interaction: RepliableInteraction, config: DiscordConfig): boolean {
+  const guildId = interaction.guildId;
+  if (guildId === null ? !config.respondToDms : config.guildPolicy === 'off') return false;
+  return isAllowlisted(config, interaction.user.id, guildId);
+}
+
+async function deny(interaction: RepliableInteraction): Promise<void> {
+  await interaction
+    .reply({ content: DENIED_TEXT, flags: MessageFlags.Ephemeral })
+    .then(() => undefined)
+    .catch(() => undefined);
+}
+
+/**
+ * Route an inbound interaction. Slash commands and our own button/select
+ * components are deferred immediately (Discord's 3s ack window), driven through
+ * a fresh turn, and rendered back via the interaction's 15-min token.
+ */
+export async function handleInteraction(
+  interaction: Interaction,
+  deps: InteractionDeps,
+): Promise<void> {
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName !== SLASH_COMMAND_NAME) return;
+    if (!permitted(interaction, deps.config)) {
+      await deny(interaction);
+      return;
+    }
+    try {
+      await interaction.deferReply();
+      const query = interaction.options.getString('query', true);
+      const turn = buildSlashTurn(deps.channelId, query, interaction);
+      const answer = await deps.runner.runTurn(turn);
+      await respond(interaction, turn, answer, deps);
+    } catch (err) {
+      await fail(interaction, deps, err);
+    }
+    return;
   }
 
-  /** True for ids this plugin minted (so we ignore other plugins' buttons). */
-  owns(customId: string): boolean {
-    return customId.startsWith(`${CUSTOM_ID_PREFIX}:`);
-  }
-
-  /** Look up (and consume) a payload. One-shot: a button is spent on click. */
-  take(customId: string): PendingInteraction | undefined {
-    const payload = this.entries.get(customId);
-    if (payload) this.entries.delete(customId);
-    return payload;
+  if (interaction.isButton() || interaction.isStringSelectMenu()) {
+    if (!interaction.customId.startsWith(`${CUSTOM_ID_PREFIX}:`)) return;
+    if (!permitted(interaction, deps.config)) {
+      await deny(interaction);
+      return;
+    }
+    try {
+      await interaction.deferReply();
+      const turn = resolveComponentTurn(interaction, deps);
+      if (!turn) {
+        await interaction.editReply(EXPIRED_TEXT);
+        return;
+      }
+      const answer = await deps.runner.runTurn(turn);
+      await respond(interaction, turn, answer, deps);
+    } catch (err) {
+      await fail(interaction, deps, err);
+    }
   }
 }

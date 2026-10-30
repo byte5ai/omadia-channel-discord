@@ -1,26 +1,29 @@
 #!/usr/bin/env node
 /**
- * build-zip.mjs — builds an uploadable Discord-channel package.
+ * build-zip.mjs — builds the uploadable Discord-channel package.
  *
- * Unlike the agent boilerplate (which is tsc-only), a channel that depends on
- * a NON-host library (discord.js) must BUNDLE it into dist/plugin.js: the host
- * resolves a plugin's bare imports against ITS OWN node_modules, so anything
- * the host doesn't already ship must be inlined. We therefore esbuild-bundle
- * `src/plugin.ts` → `dist/plugin.js` (ESM), keeping only the host-provided
- * peers (`@omadia/*`, `express`) external.
+ * Unlike the agent boilerplate (tsc → dist), a channel bundles its non-host
+ * dependencies (discord.js, @omadia/table-render with its fonts, Twemoji and
+ * resvg WASM) into a single `dist/plugin.js` via esbuild. Host peers
+ * (@omadia/channel-sdk, @omadia/plugin-api, express) and discord.js's optional
+ * native addons stay external. See creating-plugins.md §5.
  *
  * Steps:
- *   1) esbuild bundle  → dist/plugin.js  (discord.js inlined)
- *   2) verify dist/plugin.js exists
- *   3) copy runtime artefacts into out/<id>-<version>-package/
- *   4) zip into out/<id>-<version>.zip
- *
- * Run `npm run typecheck` separately for the tsc gate (needs the @omadia
- * type sources from the adjacent omadia checkout — see README).
+ *   1) esbuild bundle src/plugin.ts → dist/plugin.js
+ *   2) Stage runtime artefacts into out/<safeName>-<version>-package/
+ *   3) Verify dist/plugin.js exists
+ *   4) Zip into out/<safeName>-<version>.zip
  */
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,23 +36,7 @@ function readJson(p) {
   return JSON.parse(readFileSync(p, 'utf8'));
 }
 
-const pkg = readJson(join(pkgRoot, 'package.json'));
-if (!pkg.name || !pkg.version) {
-  throw new Error('package.json: name + version required');
-}
-
 // --- 1) esbuild bundle ---------------------------------------------------
-// ESM banner so bundled CJS deps (discord.js pulls in CJS transitive modules)
-// can call require / __dirname / __filename inside the ESM output.
-const ESM_BANNER = [
-  "import { createRequire as ___createRequire } from 'node:module';",
-  "import { fileURLToPath as ___fileURLToPath } from 'node:url';",
-  "import { dirname as ___dirname } from 'node:path';",
-  'const require = ___createRequire(import.meta.url);',
-  'const __filename = ___fileURLToPath(import.meta.url);',
-  'const __dirname = ___dirname(__filename);',
-].join('\n');
-
 console.log('▶ esbuild bundle');
 await build({
   entryPoints: [join(pkgRoot, 'src/plugin.ts')],
@@ -58,61 +45,73 @@ await build({
   platform: 'node',
   format: 'esm',
   target: 'node20',
-  sourcemap: false,
-  legalComments: 'none',
-  logLevel: 'info',
-  banner: { js: ESM_BANNER },
+  // Host-provided peers stay external; everything else is inlined. The
+  // optional native acceleration addons are external so discord.js's
+  // try/catch fallback to pure JS works when they're absent on the host.
+  // @omadia/table-render is NOT a host peer despite the scope — it is ours.
   external: [
-    // Host-provided peers — must NOT be inlined (resolve from host node_modules).
     '@omadia/channel-sdk',
     '@omadia/plugin-api',
     'express',
-    // discord.js / ws optional native acceleration modules. They are loaded
-    // via try/catch (optional), so keeping them external + absent is handled
-    // gracefully at runtime and keeps the bundle lean / portable.
     'zlib-sync',
     'bufferutil',
     'utf-8-validate',
-    '@discordjs/opus',
-    'opusscript',
-    'ffmpeg-static',
-    'node-opus',
-    'sodium-native',
-    'libsodium-wrappers',
   ],
+  // Fonts and the resvg WASM become Uint8Arrays inside the bundle, so the
+  // ZIP needs no loose asset files.
+  loader: { '.woff': 'binary', '.wasm': 'binary' },
+  // ESM banner so bundled CJS code has a working `require`. Aliased: satori's
+  // ESM build imports `createRequire` itself (duplicate declaration otherwise).
+  banner: {
+    js: "import{createRequire as __omadiaCreateRequire}from'node:module';const require=__omadiaCreateRequire(import.meta.url);",
+  },
+  logLevel: 'info',
 });
 
-// --- 2) verify entry -----------------------------------------------------
+// --- 2) Metadata ---------------------------------------------------------
+const pkg = readJson(join(pkgRoot, 'package.json'));
+if (!pkg.name || !pkg.version) {
+  throw new Error('package.json: name + version required');
+}
 const entryRel = pkg.main ?? 'dist/plugin.js';
 const entryAbs = join(pkgRoot, entryRel);
 if (!existsSync(entryAbs) || !statSync(entryAbs).isFile()) {
-  throw new Error(`entry not found after bundle: ${entryRel}`);
+  throw new Error(`entry not found after build: ${entryRel}`);
 }
 
-// --- 3) stage runtime artefacts -----------------------------------------
+// --- 3) Stage runtime artefacts -----------------------------------------
+// Sanitize the scoped name the way `npm pack` does: strip `@`, `/` → `-`.
 const safeName = pkg.name.replace(/^@/, '').replace(/\//g, '-');
 const stageName = `${safeName}-${pkg.version}-package`;
 const stageDir = join(pkgRoot, 'out', stageName);
 rmSync(stageDir, { recursive: true, force: true });
 mkdirSync(stageDir, { recursive: true });
 
-const INCLUDE = ['manifest.yaml', 'package.json', 'dist', 'assets', 'README.md', 'LICENSE', 'NOTICE'];
+const INCLUDE = [
+  'manifest.yaml',
+  'package.json',
+  'dist',
+  'assets',
+  'README.md',
+  'LICENSE',
+  'THIRD_PARTY_NOTICES.md',
+  'NOTICE',
+];
 for (const entry of INCLUDE) {
   const src = join(pkgRoot, entry);
   if (!existsSync(src)) continue;
   cpSync(src, join(stageDir, entry), { recursive: true });
 }
 
-// --- 4) zip --------------------------------------------------------------
+// --- 4) Zip --------------------------------------------------------------
 const zipPath = join(pkgRoot, 'out', `${safeName}-${pkg.version}.zip`);
 rmSync(zipPath, { force: true });
-
 const zipRes = spawnSync('zip', ['-r', '-q', zipPath, stageName], {
   cwd: join(pkgRoot, 'out'),
   stdio: 'inherit',
 });
 if (zipRes.status !== 0) {
-  throw new Error('zip CLI failed — on Windows use 7z a or Compress-Archive');
+  throw new Error('zip CLI failed — on Windows use 7z a / Compress-Archive');
 }
 
 console.log(`✓ built ${zipPath}`);

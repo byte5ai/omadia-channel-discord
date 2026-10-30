@@ -1,135 +1,125 @@
 schema_version: "1"
 
 # ===========================================================================
-# @omadia/channel-discord — Discord channel (Gateway bot via discord.js)
+# @omadia/channel-discord — Discord-Bot-Channel (discord.js Gateway)
 # ---------------------------------------------------------------------------
-# Schema of truth: docs/harness-platform/manifest-schema.v1.yaml (section 14).
-# A channel ROUTES turns — it has NO capabilities / playbook of its own. It
-# receives native Discord Gateway events, translates them to the core
-# IncomingTurn shape, drives the orchestrator's ChatAgent, and renders the
-# answer back to Discord. Auth is a Bot Token from the Discord Developer
-# Portal (Applications → Bot → Token) — collected once at install as a vault
-# secret, exactly like a Telegram BotFather token (not a QR scan).
+# 2.x replaces 0.1.x in place: same id, and turns resolve their Agent the
+# way 0.1.5 does (Discord channel id first, then guild id) with the same
+# `discord:<channelId>` session scope, so existing bindings and conversation
+# memory carry over. Setup shrinks to the bot token; the Application ID, the
+# Message Content intent and the invite link are derived from it at runtime.
 # ===========================================================================
 
 identity:
-  id: "@omadia/channel-discord"           # === package.json "name"
+  id: "@omadia/channel-discord"
   kind: "channel"
   domain: "discord"
-  name: "Discord"
-  version: "0.1.5"                         # === package.json "version"
-  description: "Discord-Channel via discord.js Gateway-Bot. Routet Discord-DMs, @Erwähnungen und den /ask Slash-Command in den Omadia-Orchestrator."
+  name: "Discord Channel"
+  version: "2.0.0"
+  description: "Discord-Bot-Channel. Einrichtung nur mit dem Bot-Token: Application-ID, Einladungslink und Slash-Command ergeben sich automatisch. Antworten kommen als Discord Components V2 — Tabellen werden als Bild mit CSV-Anhang gezeigt statt als umbrochener Markdown-Text, dazu Buttons, Auswahlmenüs und Bilder."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
       url: "https://omadia.ai"
   license: "MIT"
-  homepage: "https://github.com/byte5ai/omadia-channel-discord"
   icon: "./assets/icon.svg"
   categories:
+    - "channel"
     - "communication"
 
 compat:
   core: ">=1.0 <2.0"
   node: ">=20"
 
+multi_instance: true
+
+privacy_class: "default"
+
 depends_on: []
 
-lifecycle:
-  entry: "dist/plugin.js"                  # exports `activate(ctx, core)` (ChannelPlugin shape 1)
-  uninstall_policy:
-    entities: "delete"
-    memory: "delete"
-    secrets: "delete"                       # drops the stored Discord bot token
+# Every capability resolved through `ctx.services.get` must be declared
+# (omadia#838; same entries as 0.1.5). `chatAgent@^1` is published by
+# @omadia/orchestrator, so the resolver orders it first. `channelResolver@1`
+# is published by the kernel, not a plugin: a `requires:` entry would never
+# resolve, and its absence is survivable (every turn falls back to the
+# default chatAgent).
+requires:
+  - "chatAgent@^1"
+optional_requires:
+  - "channelResolver@1"
 
-# ---------------------------------------------------------------------------
-# Setup. The bot token IS a credential, so unlike the WhatsApp QR flow it is
-# collected here at install (type: secret → vault, read via ctx.secrets). The
-# remaining fields only tune routing/access policy and are plain config
-# (ctx.config.get).
-# ---------------------------------------------------------------------------
+lifecycle:
+  entry: "dist/plugin.js"
+
+admin_ui_path: "/api/discord/admin/index.html"
+
+channel:
+  transport:
+    kind: "websocket"
+    routes: []
+    verify_signature: false
+  capabilities:
+    - "text"
+    - "attachments"
+    - "interactive_cards"
+    - "file_upload"
+    - "typing_indicator"
+  adapters:
+    - "discord_components"
+    - "markdown"
+    - "text"
+
 setup:
   guide:
     en: |
       ## Create a Discord bot
 
-      You need a **bot token** from the Discord Developer Portal. Takes about
-      5 minutes.
+      All you need is a **bot token**. About two minutes.
 
-      ### 1. Create an application + bot
-      1. Open the [Discord Developer Portal](https://discord.com/developers/applications) and sign in.
-      2. Top right **New Application** → give it a name (e.g. "Omadia") → **Create**.
-      3. Left sidebar → **Bot** → confirm **Add Bot**.
+      1. Open the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application** → name it (e.g. "Omadia") → **Create**.
+      2. Left sidebar → **Bot** → **Reset Token** → **Copy**.
+      3. Paste it below as **Discord Bot Token** and install.
 
-      ### 2. Copy the token
-      1. On the **Bot** tab → **Reset Token** → **Yes, do it!** → **Copy**.
-      2. Paste this value below as **Discord Bot Token**. It is stored encrypted
-         in the vault and **shown only once** — if lost, just "Reset Token" again.
+      After installing, the plugin page walks you through the rest: it shows the
+      bot, gives you the **invite button** for your server and ticks off the
+      first conversation. Application ID, slash command and invite link are
+      derived from the token.
 
-      ### 3. Intents (only for "Respond to every message")
-      The default (DMs + @mention) needs **no** privileged intent. Only if you set
-      *Behaviour in servers* to **Respond to every message**:
-      - Bot tab → **Privileged Gateway Intents** → enable **Message Content Intent** → **Save**.
-
-      ### 4. Invite the bot to your server
-      1. Left sidebar → **OAuth2** → **URL Generator**.
-      2. **Scopes**: tick `bot` and `applications.commands`.
-      3. **Bot Permissions**: at least *Send Messages* and *Read Message History*.
-      4. Copy the generated URL, open it in the browser, pick your server → **Authorize**.
-
-      > Tip: for the optional allowlist, enable **Settings → Advanced → Developer
-      > Mode** in Discord, then right-click a user/server → **Copy ID**.
-
-      ### 5. Done
-      Paste the token below and install. You'll see the connection status and the
-      invite URL afterwards in the plugin admin UI.
+      The **Message Content Intent** is only needed if the bot should answer
+      *every* message in a channel. The plugin page tells you if it is missing.
     de: |
       ## Discord-Bot anlegen
 
-      Du brauchst einen **Bot-Token** aus dem Discord Developer Portal. Das dauert
-      ca. 5 Minuten.
+      Du brauchst nur einen **Bot-Token**. Dauert etwa zwei Minuten.
 
-      ### 1. Application + Bot erstellen
-      1. Öffne das [Discord Developer Portal](https://discord.com/developers/applications) und melde dich an.
-      2. Oben rechts **New Application** → Namen vergeben (z.B. „Omadia") → **Create**.
-      3. Linke Leiste → **Bot** → **Add Bot** bestätigen.
+      1. Öffne das [Discord Developer Portal](https://discord.com/developers/applications) → **New Application** → Namen vergeben (z. B. „Omadia“) → **Create**.
+      2. Linke Leiste → **Bot** → **Reset Token** → **Copy**.
+      3. Unten als **Discord Bot Token** einsetzen und installieren.
 
-      ### 2. Token kopieren
-      1. Im **Bot**-Tab → **Reset Token** → **Yes, do it!** → **Copy**.
-      2. Diesen Wert trägst du unten als **Discord Bot Token** ein. Er wird
-         verschlüsselt im Vault gespeichert und **nur einmal angezeigt** — bei
-         Verlust einfach erneut „Reset Token".
+      Nach der Installation führt dich die Plugin-Seite durch den Rest: Sie
+      zeigt den Bot, gibt dir den **Einladungs-Button** für deinen Server und
+      hakt die erste Unterhaltung ab. Application-ID, Slash-Command und
+      Einladungslink ergeben sich aus dem Token.
 
-      ### 3. Intents (nur bei „Auf jede Nachricht")
-      Standard (DMs + @Erwähnung) braucht **kein** privilegiertes Intent. Nur wenn
-      du *Verhalten in Servern* auf **Auf jede Nachricht** stellst:
-      - Bot-Tab → **Privileged Gateway Intents** → **Message Content Intent** aktivieren → **Save**.
-
-      ### 4. Bot auf deinen Server einladen
-      1. Linke Leiste → **OAuth2** → **URL Generator**.
-      2. **Scopes**: `bot` und `applications.commands` ankreuzen.
-      3. **Bot Permissions**: mindestens *Send Messages* und *Read Message History*.
-      4. Generierte URL unten kopieren, im Browser öffnen, deinen Server wählen → **Authorize**.
-
-      > Tipp: Für die optionale Allowlist aktiviere in Discord **Einstellungen →
-      > Erweitert → Entwicklermodus**, dann Rechtsklick auf einen User/Server →
-      > **ID kopieren**.
-
-      ### 5. Fertig
-      Token unten einsetzen und installieren. Den Verbindungsstatus und die
-      Einladungs-URL siehst du danach in der Plugin-Admin-UI.
+      Den **Message Content Intent** brauchst du nur, wenn der Bot auf *jede*
+      Nachricht in einem Kanal antworten soll. Fehlt er, sagt dir das die
+      Plugin-Seite.
+  # Keys are 0.1.5's, so an in-place upgrade keeps token, policy and
+  # allowlist. Dropped: message_content_intent (detected from the token),
+  # enable_slash_command (/ask is always registered, per server), ignore_bots
+  # (other bots are always ignored).
   fields:
     - key: "discord_bot_token"
       type: "secret"
       label: "Discord Bot Token"
-      help: "Aus dem Discord Developer Portal → deine Application → Bot → 'Reset Token' / 'Copy'. Wird verschlüsselt im Vault gespeichert und nie wieder angezeigt."
+      help: "Discord Developer Portal → deine Application → Bot → Reset Token → Copy. Wird verschlüsselt im Vault gespeichert. Mehr braucht es nicht — den Rest zeigt dir nach der Installation die Plugin-Seite."
       placeholder: "Bot-Token aus dem Developer Portal (Bot → Reset Token)"
       required: true
 
     - key: "respond_in_guilds"
       type: "enum"
       label: "Verhalten in Servern (Guilds)"
-      help: "Wann der Bot in Server-Kanälen antwortet. 'mention' (Standard): nur wenn er @erwähnt wird. 'all': auf jede Nachricht (benötigt das Message-Content-Intent unten). 'off': in Servern stumm, nur Direktnachrichten."
+      help: "Wann der Bot in Server-Kanälen antwortet. 'Nur bei @Erwähnung' (Standard; Antworten auf seine Nachrichten zählen mit), 'Auf jede Nachricht' (braucht den Message Content Intent im Developer Portal) oder 'In Servern stumm' (nur Direktnachrichten)."
       required: false
       default: "mention"
       enum:
@@ -140,102 +130,27 @@ setup:
     - key: "allow_dms"
       type: "boolean"
       label: "Direktnachrichten zulassen"
-      help: "Wenn aktiv, antwortet der Bot in 1:1-Direktnachrichten. DM-Inhalte sind auch ohne privilegiertes Intent für den Bot lesbar."
-      required: false
-      default: true
-
-    - key: "message_content_intent"
-      type: "boolean"
-      label: "Message-Content-Intent anfordern"
-      help: "NUR nötig für 'Auf jede Nachricht'. Fordert das privilegierte Message-Content-Intent an — das musst du im Developer Portal → Bot → 'Privileged Gateway Intents' separat aktivieren, sonst schlägt der Login fehl. Für DMs und @Erwähnungen NICHT nötig."
-      required: false
-      default: false
-
-    - key: "enable_slash_command"
-      type: "boolean"
-      label: "/ask Slash-Command registrieren"
-      help: "Registriert global den Slash-Command /ask <Frage>. Die globale Registrierung kann nach dem ersten Start bis zu einer Stunde brauchen, bis sie in allen Servern erscheint."
-      required: false
-      default: true
-
-    - key: "ignore_bots"
-      type: "boolean"
-      label: "Andere Bots ignorieren"
-      help: "Wenn aktiv, ignoriert der Bot Nachrichten anderer Bots/Webhooks (verhindert Bot-zu-Bot-Schleifen). Eigene Nachrichten werden immer ignoriert."
+      help: "Wenn aktiv, antwortet der Bot in 1:1-Direktnachrichten."
       required: false
       default: true
 
     - key: "allowlist"
       type: "string"
       label: "Zugelassene IDs (optional)"
-      help: "Komma-getrennte Discord-User-IDs und/oder Guild-IDs, die mit dem Bot interagieren dürfen. Leer = alle. (Entwickler-Modus in Discord aktivieren → Rechtsklick → 'ID kopieren'.)"
+      help: "Komma-getrennte Discord-User-IDs und/oder Server-IDs, die den Bot nutzen dürfen — gilt für Nachrichten, /ask und Buttons. Leer = alle. (In Discord Entwicklermodus aktivieren → Rechtsklick → 'ID kopieren'.)"
       required: false
       default: ""
 
   self_test: false
 
-# ---------------------------------------------------------------------------
-# Permissions. The bot token lives in the vault (ctx.secrets). No per-session
-# auth-state is persisted (the static token is the only credential), so memory
-# stays empty. network.outbound is descriptive for the operator permissions
-# summary — discord.js opens its OWN Gateway WebSocket + REST calls, it does
-# not route through ctx.http.
-# ---------------------------------------------------------------------------
 permissions:
   memory:
-    reads: []
-    writes: []
-  graph:
-    reads: []
-    writes: []
+    reads: ["agent:@omadia/channel-discord:*"]
+    writes: ["agent:@omadia/channel-discord:*"]
   network:
     outbound:
       - "discord.com"
-      - "*.discord.com"
       - "gateway.discord.gg"
-      - "*.discord.gg"
-      - "*.discordapp.com"
       - "cdn.discordapp.com"
   filesystem:
     scratch: false
-
-# omadia#838 — declare every capability this channel resolves through
-# `ctx.services.get`, retiring the `@omadia/channel-discord` row in
-# `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20`.
-#
-# `requires:` — `chatAgent@^1` is the orchestrator-published ChatAgentBundle
-# (`resolveChatAgent` throws "orchestrator unavailable" when absent), and
-# `@omadia/orchestrator` declares `provides: chatAgent@1`, so the capability
-# resolver resolves the edge and orders the orchestrator first.
-#
-# `optional_requires:` — `channelResolver@1` is the multi-orchestrator
-# per-turn router, published by the middleware kernel rather than a plugin
-# manifest, and its absence is survivable (every turn falls back to the
-# default chatAgent). A `requires:` entry would be permanently unresolved and
-# drop the channel from the eligible set; `optional_requires:` grants the same
-# declaration the service gate asks for without a resolver edge.
-requires:
-  - "chatAgent@^1"
-optional_requires:
-  - "channelResolver@1"
-provides: []
-
-# Generic admin-UI iframe surface (rendered by web-ui for any plugin that
-# declares admin_ui_path). Shows connection status, the linked bot identity,
-# and the OAuth2 invite URL to add the bot to a server.
-admin_ui_path: "/api/discord-channel/admin/index.html"
-
-# ---------------------------------------------------------------------------
-# Channel block (schema section 14). Discord's Gateway is a long-lived
-# outbound WebSocket — no inbound webhook routes to mount.
-# ---------------------------------------------------------------------------
-channel:
-  transport:
-    kind: "websocket"
-  capabilities:
-    - "text"
-    - "typing_indicator"
-    - "buttons"
-  adapters:
-    - "text"
-    - "markdown"
