@@ -10,6 +10,7 @@ import {
   createDiscordConversationSendProvider,
   createDiscordTargetedSendProvider,
   discordUserIdOf,
+  ownReactionRoute,
   type ProactiveChannel,
   type SendProviderDeps,
 } from '../src/sendProviders.js';
@@ -21,8 +22,9 @@ function apiError(code: number): Error {
   return Object.assign(new Error(`discord ${String(code)}`), { code });
 }
 
-function setup(over: Partial<SendProviderDeps> = {}, failWith?: { channel?: Error; dm?: Error }) {
+function setup(over: Partial<SendProviderDeps> = {}, failWith?: { channel?: Error; dm?: Error; react?: Error }) {
   const posted: { target: string; content?: string }[] = [];
+  const reactions: string[] = [];
   const place = (target: string, guildId: string | null): ProactiveChannel => ({
     guildId,
     send: async (o) => {
@@ -40,6 +42,10 @@ function setup(over: Partial<SendProviderDeps> = {}, failWith?: { channel?: Erro
         if (failWith?.dm) throw failWith.dm;
         return place(`dm:${id}`, null);
       },
+      addOwnReaction: async (route) => {
+        if (failWith?.react) throw failWith.react;
+        reactions.push(route);
+      },
     },
     speakerHistory: new InMemorySpeakerHistoryStore(),
     log: () => undefined,
@@ -49,7 +55,7 @@ function setup(over: Partial<SendProviderDeps> = {}, failWith?: { channel?: Erro
   };
   // One bot: no key and its own key name it, nothing else does.
   const lookup = (key: string | undefined) => (key === undefined || key === OWN_KEY ? deps : undefined);
-  return { deps: lookup, posted };
+  return { deps: lookup, posted, reactions };
 }
 
 const OWN_KEY = 'discord-app:323456789012345678';
@@ -59,10 +65,17 @@ const text = (t: string): TargetedMessage => ({ text: t });
 describe('capabilities', () => {
   it('declare the named identity and nothing else: no poll, card, mentions or AI label', () => {
     const { deps } = setup();
-    for (const provider of [createDiscordTargetedSendProvider(deps), createDiscordConversationSendProvider(deps)]) {
-      assert.equal(provider.channelType, 'discord');
-      assert.deepEqual({ ...provider.supports }, { asChannelKey: true });
-    }
+    const targeted = createDiscordTargetedSendProvider(deps);
+    assert.equal(targeted.channelType, 'discord');
+    assert.deepEqual({ ...targeted.supports }, { asChannelKey: true });
+  });
+
+  it('the conversation provider also declares reactions, and implements them', () => {
+    const { deps } = setup();
+    const conversation = createDiscordConversationSendProvider(deps);
+    assert.equal(conversation.channelType, 'discord');
+    assert.deepEqual({ ...conversation.supports }, { asChannelKey: true, reactions: true });
+    assert.equal(typeof conversation.react, 'function');
   });
 });
 
@@ -169,5 +182,93 @@ describe('conversation send (a post into a channel)', () => {
       const out = await createDiscordConversationSendProvider(deps).sendToConversation(CHANNEL, text('x'));
       assert.equal(out.outcome === 'unreachable' && out.code, expected);
     }
+  });
+});
+
+describe('reaction (a thumbs-up on a message, spec 2043 §5.14)', () => {
+  const MESSAGE = '423456789012345678';
+  const THUMBS_UP_ROUTE = `/channels/${CHANNEL}/messages/${MESSAGE}/reactions/%F0%9F%91%8D/@me`;
+  const as = { asChannelKey: OWN_KEY };
+
+  it('builds Discord\'s Create Reaction route with the URL-encoded emoji', () => {
+    assert.equal(ownReactionRoute(CHANNEL, MESSAGE, '\u{1F44D}'), THUMBS_UP_ROUTE);
+  });
+
+  it('PUTs a thumbs-up on the message (channel id + message id as the inbound event stated them)', async () => {
+    const { deps, reactions, posted } = setup();
+    const out = await createDiscordConversationSendProvider(deps).react!(CHANNEL, MESSAGE, 'acknowledge', as);
+    assert.deepEqual(out, { outcome: 'reacted' });
+    assert.deepEqual(reactions, [THUMBS_UP_ROUTE]);
+    assert.deepEqual(posted, [], 'a reaction posts no message');
+  });
+
+  it('accepts the identity key in any case, like a send', async () => {
+    const { deps, reactions } = setup();
+    const out = await createDiscordConversationSendProvider(deps).react!(CHANNEL, MESSAGE, 'acknowledge', {
+      asChannelKey: OWN_KEY.toUpperCase(),
+    });
+    assert.deepEqual(out, { outcome: 'reacted' });
+    assert.equal(reactions.length, 1);
+  });
+
+  it('refuses an unknown or missing identity, never reacts through another bot', async () => {
+    const { deps, reactions } = setup();
+    const provider = createDiscordConversationSendProvider(deps);
+    for (const asChannelKey of ['discord:agent-mira', 'discord-app:999999999999999999', '', '  ']) {
+      const out = await provider.react!(CHANNEL, MESSAGE, 'acknowledge', { asChannelKey });
+      assert.equal(out.outcome === 'unreachable' && out.code, 'not_permitted', asChannelKey);
+    }
+    const none = await provider.react!(CHANNEL, MESSAGE, 'acknowledge', undefined as never);
+    assert.equal(none.outcome === 'unreachable' && none.code, 'not_permitted');
+    assert.deepEqual(reactions, []);
+  });
+
+  it('refuses ids that are not Discord ids and an unknown reaction', async () => {
+    const { deps, reactions } = setup();
+    const provider = createDiscordConversationSendProvider(deps);
+    const badChannel = await provider.react!('session-scope', MESSAGE, 'acknowledge', as);
+    assert.equal(badChannel.outcome === 'unreachable' && badChannel.code, 'no_binding');
+    const badMessage = await provider.react!(CHANNEL, '1700000000.0001', 'acknowledge', as);
+    assert.equal(badMessage.outcome === 'unreachable' && badMessage.code, 'no_binding');
+    const party = await provider.react!(CHANNEL, MESSAGE, 'party' as never, as);
+    assert.equal(party.outcome === 'unreachable' && party.code, 'channel_error');
+    assert.deepEqual(reactions, []);
+  });
+
+  it('does not react in a server that is not on the allowlist', async () => {
+    const { deps, reactions } = setup({ isAllowed: () => false });
+    const out = await createDiscordConversationSendProvider(deps).react!(CHANNEL, MESSAGE, 'acknowledge', as);
+    assert.equal(out.outcome === 'unreachable' && out.code, 'not_permitted');
+    assert.deepEqual(reactions, []);
+  });
+
+  it('maps 403, 404 and 429 and keeps Discord\'s message, never throws', async () => {
+    const httpError = (status: number, code: number | string, text: string): Error =>
+      Object.assign(new Error(text), { status, code });
+    const rateLimit = Object.assign(new Error('Request to use token, but token was unavailable'), { name: 'RateLimitError' });
+    const cases: [Error, string, string][] = [
+      [httpError(403, 50013, 'Missing Permissions'), 'not_permitted', 'Missing Permissions'],
+      [httpError(403, 90001, 'Reaction blocked'), 'not_permitted', 'Reaction blocked'],
+      [httpError(403, 50001, 'Missing Access'), 'not_permitted', 'Missing Access'],
+      [httpError(404, 10008, 'Unknown Message'), 'no_binding', 'Unknown Message'],
+      [httpError(404, 10003, 'Unknown Channel'), 'no_binding', 'Unknown Channel'],
+      [httpError(429, 'RateLimited', 'You are being rate limited.'), 'channel_error', 'You are being rate limited.'],
+      [rateLimit, 'channel_error', 'token was unavailable'],
+      [httpError(500, 0, 'Internal Server Error'), 'channel_error', 'Internal Server Error'],
+      [new Error('socket hang up'), 'channel_error', 'socket hang up'],
+    ];
+    for (const [err, expected, text] of cases) {
+      const { deps } = setup({}, { react: err });
+      const out = await createDiscordConversationSendProvider(deps).react!(CHANNEL, MESSAGE, 'acknowledge', as);
+      assert.equal(out.outcome === 'unreachable' && out.code, expected, err.message);
+      assert.ok(out.outcome === 'unreachable' && out.message.includes(text), out.outcome === 'unreachable' ? out.message : '');
+    }
+  });
+
+  it('an unknown channel on the lookup is no_binding, nothing is set', async () => {
+    const { deps, reactions } = setup({}, { channel: apiError(10003) });
+    const out = await createDiscordConversationSendProvider(deps).react!(CHANNEL, MESSAGE, 'acknowledge', as);
+    assert.equal(out.outcome === 'unreachable' && out.code, 'no_binding');
+    assert.deepEqual(reactions, []);
   });
 });

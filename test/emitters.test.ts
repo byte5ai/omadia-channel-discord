@@ -49,11 +49,18 @@ describe('emitter paths (criterion 5)', () => {
     assert.deepEqual(offenders.filter((o) => !allowed(o)), []);
   });
 
-  it('there is no reaction and no button anywhere in the sources', () => {
+  it('the plugin reacts on its own nowhere and has no button anywhere in the sources', () => {
     for (const file of readdirSync(SRC).filter((f) => f.endsWith('.ts'))) {
       const code = readFileSync(`${SRC}${file}`, 'utf8');
-      assert.ok(!/\.react\(|ButtonBuilder|ActionRowBuilder|ACK_EMOJI|AddReactions/.test(code), file);
+      assert.ok(!/\.react\(|ButtonBuilder|ActionRowBuilder|ACK_EMOJI/.test(code), file);
     }
+  });
+
+  it('the only reaction is the kernel\'s (spec 2043 §5.14): one REST path, set as the named bot', () => {
+    const users = readdirSync(SRC)
+      .filter((f) => f.endsWith('.ts'))
+      .filter((f) => /addOwnReaction\(/.test(readFileSync(`${SRC}${f}`, 'utf8')));
+    assert.deepEqual(users, ['sendProviders.ts']);
   });
 
   it('every plugin-local text is a system answer', () => {

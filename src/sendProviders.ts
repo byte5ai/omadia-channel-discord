@@ -1,6 +1,8 @@
 import type { BaseMessageOptions } from 'discord.js';
 
+import type { ConversationReaction } from '@omadia/plugin-api';
 import type {
+  ConversationReactionOutcome,
   ConversationSendProvider,
   LogLevel,
   SendProviderCapabilities,
@@ -29,11 +31,25 @@ import { DISCORD_CHANNEL_TYPE } from './renderer.js';
  *    of the Discord message it posted (`messageId`), which a reply points at.
  *    The replies reach the kernel as `created` events (`conversationEvents.ts`);
  *  - no `mentions`, no `aiLabel`: the kernel adds the instance's disclosure
- *    line to the text instead.
+ *    line to the text instead;
+ *  - `reactions` (conversation provider only, spec 2043 §5.14): a thumbs-up
+ *    on a message, set by exactly the bot `asChannelKey` names, through
+ *    Discord's Create Reaction (`PUT /channels/{channel.id}/messages/
+ *    {message.id}/reactions/{emoji}/@me`, 204 on success; needs
+ *    READ_MESSAGE_HISTORY and ADD_REACTIONS).
  */
 
-/** The capabilities declared by both providers: the named identity, otherwise text only. */
+/** The capabilities of the DM provider: the named identity, otherwise text only. */
 export const DISCORD_SEND_CAPABILITIES: SendProviderCapabilities = Object.freeze({ asChannelKey: true });
+
+/** The capabilities of the conversation provider: also reactions as the named identity. */
+export const DISCORD_CONVERSATION_CAPABILITIES: SendProviderCapabilities = Object.freeze({
+  asChannelKey: true,
+  reactions: true,
+});
+
+/** The platform form of each kernel reaction: Discord's unicode thumbs-up. */
+const REACTION_EMOJI: Readonly<Record<ConversationReaction, string>> = Object.freeze({ acknowledge: '\u{1F44D}' });
 
 const SNOWFLAKE = /^\d{15,25}$/;
 const DISCORD_USER_PRINCIPAL = /^(?:user:)?discord-user:(\d{15,25})$/i;
@@ -44,6 +60,12 @@ const API_UNKNOWN_USER = 10013;
 const API_MISSING_ACCESS = 50001;
 const API_CANNOT_DM_USER = 50007;
 const API_MISSING_PERMISSIONS = 50013;
+const API_UNKNOWN_MESSAGE = 10008;
+const API_REACTION_BLOCKED = 90001;
+
+const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
+const HTTP_TOO_MANY_REQUESTS = 429;
 
 type Unreachable = Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }>;
 
@@ -64,6 +86,15 @@ export interface ProactiveChannel {
 export interface SendPort {
   channel(channelId: string): Promise<ProactiveChannel>;
   directChannel(userId: string): Promise<ProactiveChannel>;
+  /** `PUT` the bot's own reaction at `route` (see {@link ownReactionRoute}); resolves on Discord's 204. */
+  addOwnReaction(route: OwnReactionRoute): Promise<void>;
+}
+
+export type OwnReactionRoute = `/channels/${string}/messages/${string}/reactions/${string}/@me`;
+
+/** Discord's Create Reaction route; the emoji must be URL-encoded (else `10014: Unknown Emoji`). */
+export function ownReactionRoute(channelId: string, messageId: string, emoji: string): OwnReactionRoute {
+  return `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`;
 }
 
 export interface SendProviderDeps {
@@ -86,6 +117,16 @@ export type DiscordBotLookup = (asChannelKey: string | undefined) => SendProvide
 function apiCode(err: unknown): number | undefined {
   const code = (err as { code?: unknown } | null)?.code;
   return typeof code === 'number' ? code : undefined;
+}
+
+function httpStatus(err: unknown): number | undefined {
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === 'number' ? status : undefined;
+}
+
+/** discord.js rejects with a `RateLimitError` (no status) when it is told not to queue. */
+function isRateLimited(err: unknown): boolean {
+  return httpStatus(err) === HTTP_TOO_MANY_REQUESTS || (err as { name?: unknown } | null)?.name === 'RateLimitError';
 }
 
 function errorText(err: unknown): string {
@@ -172,11 +213,70 @@ export function createDiscordTargetedSendProvider(lookup: DiscordBotLookup): Tar
   };
 }
 
+type ReactionUnreachable = Extract<ConversationReactionOutcome, { outcome: 'unreachable' }>;
+
+/** A failed Create Reaction as the kernel's outcome; Discord's own message is kept. */
+function reactionFailure(err: unknown, deps: SendProviderDeps): ReactionUnreachable {
+  const code = apiCode(err);
+  const status = httpStatus(err);
+  const platform = errorText(err);
+  if (code === API_UNKNOWN_CHANNEL || code === API_UNKNOWN_MESSAGE || status === HTTP_NOT_FOUND) {
+    return unreachable('no_binding', `the message or channel is gone or not visible to this bot: ${platform}`);
+  }
+  if (
+    code === API_MISSING_ACCESS ||
+    code === API_MISSING_PERMISSIONS ||
+    code === API_REACTION_BLOCKED ||
+    status === HTTP_FORBIDDEN
+  ) {
+    return unreachable(
+      'not_permitted',
+      `the bot may not react here (needs Add Reactions and Read Message History): ${platform}`,
+    );
+  }
+  if (isRateLimited(err)) {
+    return unreachable('channel_error', `Discord rate limit, no reaction was set: ${platform}`);
+  }
+  deps.log('warn', 'discord reaction failed', { error: platform, code, status });
+  return unreachable('channel_error', platform);
+}
+
+/** Set a thumbs-up on a message as exactly the bot `asChannelKey` names. Never throws. */
+async function reactAs(
+  lookup: DiscordBotLookup,
+  conversationId: string,
+  messageId: string,
+  reaction: ConversationReaction,
+  asChannelKey: string | undefined,
+): Promise<ConversationReactionOutcome> {
+  // A reaction always names its identity; without one it is not set, not set as the installation's bot.
+  if (!asChannelKey?.trim()) return unreachable('not_permitted', 'a reaction names no Discord bot - nothing was set');
+  const deps = botFor(lookup, asChannelKey);
+  if (isUnreachable(deps)) return deps;
+  const emoji = REACTION_EMOJI[reaction];
+  if (!emoji) return unreachable('channel_error', `this Discord channel has no reaction '${String(reaction)}'`);
+  if (!SNOWFLAKE.test(conversationId) || !SNOWFLAKE.test(messageId)) {
+    return unreachable('no_binding', `'${conversationId}' / '${messageId}' is not a Discord channel and message id`);
+  }
+  try {
+    const channel = await deps.port.channel(conversationId);
+    if (!deps.isAllowed(undefined, channel.guildId)) {
+      return unreachable('not_permitted', 'this server is not on the channel\'s allowlist');
+    }
+    await deps.port.addOwnReaction(ownReactionRoute(conversationId, messageId, emoji));
+    return { outcome: 'reacted' };
+  } catch (err) {
+    return reactionFailure(err, deps);
+  }
+}
+
 /** Post INTO a channel or thread (`conversationId` is the Discord channel id). */
 export function createDiscordConversationSendProvider(lookup: DiscordBotLookup): ConversationSendProvider {
   return {
     channelType: DISCORD_CHANNEL_TYPE,
-    supports: DISCORD_SEND_CAPABILITIES,
+    supports: DISCORD_CONVERSATION_CAPABILITIES,
+    react: (conversationId, messageId, reaction, opts) =>
+      reactAs(lookup, conversationId, messageId, reaction, opts?.asChannelKey),
     async sendToConversation(conversationId, message, opts): Promise<TargetedDeliveryOutcome> {
       const deps = botFor(lookup, opts?.asChannelKey);
       if (isUnreachable(deps)) return deps;

@@ -503,6 +503,10 @@ export class DiscordConnection {
     return {
       channel: (channelId) => this.proactiveChannel(channelId),
       directChannel: async (userId) => toProactiveChannel(await (await this.client.users.fetch(userId)).createDM()),
+      // Create Reaction as this client's bot; resolves on Discord's 204, rejects with the API error.
+      addOwnReaction: async (route) => {
+        await this.client.rest.put(route);
+      },
     };
   }
 
@@ -538,7 +542,9 @@ function buildInviteUrl(clientId: string): string {
     PermissionFlagsBits.ViewChannel |
     PermissionFlagsBits.SendMessages |
     PermissionFlagsBits.EmbedLinks |
-    PermissionFlagsBits.ReadMessageHistory
+    PermissionFlagsBits.ReadMessageHistory |
+    // Reactions as a quiet acknowledgement (spec 2043 §5.14).
+    PermissionFlagsBits.AddReactions
   ).toString();
   const params = new URLSearchParams({
     client_id: clientId,

@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Bot reactions (spec 2043 §5.14, byte5ai/omadia#2061, ADR 0027). Needs the
+kernel of byte5ai/omadia#2151 (channel-sdk 0.3.9, plugin-api 1.82.0) to be
+used; an older kernel never calls it, so `compat.core` stays as it is.
+
+- **A thumbs-up instead of an echo**: the conversation send provider declares
+  `supports.reactions: true` and implements `react()`. `acknowledge` becomes
+  👍 through Discord's Create Reaction
+  (`PUT /channels/{channel.id}/messages/{message.id}/reactions/%F0%9F%91%8D/@me`,
+  204 on success), addressed by the channel id and message id the plugin
+  reported in its inbound conversation-message events.
+- **As exactly the bot `asChannelKey` names** (the installation's or an
+  agent's own bot); an unknown or missing key is `not_permitted`, never
+  another bot. Respects the server allowlist.
+- **Never throws**: 404 / unknown message or channel → `no_binding`; 403 /
+  missing access, missing permissions, reaction blocked → `not_permitted`;
+  429 or a rate-limit rejection and any other failure → `channel_error`,
+  always with Discord's own message.
+- **Invite link asks for Add Reactions** (next to Read Message History, which
+  it already had). Bots invited earlier need the permission granted in the
+  server, or a new invite.
+
 ## 0.3.0
 
 An agent's own Discord bot (byte5ai/omadia#2042, spec §5.3, §8 item 20).

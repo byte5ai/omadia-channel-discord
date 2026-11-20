@@ -27,7 +27,11 @@ function bot(nativeIdentity: boolean, isAllowed = true) {
     },
   });
   const deps: SendProviderDeps = {
-    port: { channel: async (id) => place(id, 'g1'), directChannel: async (id) => place(`dm:${id}`, null) },
+    port: {
+      channel: async (id) => place(id, 'g1'),
+      directChannel: async (id) => place(`dm:${id}`, null),
+      addOwnReaction: async () => undefined,
+    },
     speakerHistory: new InMemorySpeakerHistoryStore(),
     log: () => undefined,
     isAllowed: () => isAllowed,
