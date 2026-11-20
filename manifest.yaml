@@ -30,10 +30,10 @@ identity:
     - "communication"
 
 compat:
-  # Placeholder floor for the kernel release that carries the S1 routing
-  # contract (reject with a ChatAgent, speaker before the answer, one principal
-  # form); the parent session sets the final version.
-  core: ">=1.75.0 <2.0"
+  # Placeholder for the kernel that ships agent channel identities (S7: the
+  # SDK's registerAgentIdentityProvider, asChannelKey per bot, agent_own_bot).
+  # Expected plugin-api 1.79.0; the parent session sets the final range when it lands.
+  core: ">=1.79.0 <2.0"
   node: ">=20"
 
 depends_on: []
