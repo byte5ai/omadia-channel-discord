@@ -106,6 +106,12 @@ export interface DiscordConnectionDeps {
    * no name line (Discord shows the bot's name and avatar).
    */
   agentBot?: boolean;
+  /**
+   * Is this Discord user one of this installation's own bots (the shared bot
+   * or an agent's bot)? Their posts are never a turn, whatever `ignoreBots`
+   * says: colleagues' bots answering each other would loop.
+   */
+  isSiblingBot?: (userId: string) => boolean;
 }
 
 /** A slow report never delays a turn longer than this; the answer is then unknown, i.e. no answer. */
@@ -227,6 +233,7 @@ export class DiscordConnection {
       // Never react to our own messages (loop guard).
       if (message.author.id === this.botUserId) return;
       if (this.deps.policy.ignoreBots && message.author.bot) return;
+      if (message.author.bot && this.deps.isSiblingBot?.(message.author.id)) return;
 
       const dm = isDirectMessage(message);
       if (dm) {

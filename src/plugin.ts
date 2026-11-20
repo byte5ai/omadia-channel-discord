@@ -65,9 +65,11 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
 
   const state = createChannelState();
   const speakerHistory = new InMemorySpeakerHistoryStore();
-  const choices = new PendingChoices();
   const log = (level: LogLevel, message: string, context?: Record<string, unknown>) => core.log(level, message, context);
   const policy = { guildPolicy, allowDms, ignoreBots, allowlist };
+  // Every bot of the installation (shared and agent bots), read when a message
+  // arrives: `fleet` exists by then.
+  const isOwnBot = (userId: string): boolean => own.conn.self()?.id === userId || fleet.isAgentBotUser(userId);
 
   /**
    * One Discord bot: the installation's own bot, or an agent's own bot
@@ -80,7 +82,8 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     const turnDeps: TurnDeps = {
       route: (channelKey, context) => resolveChannelRoute(ctx, DISCORD_CHANNEL_TYPE, channelKey, context),
       singleton: () => getChatAgent(ctx),
-      choices,
+      // One bot's numbered question is answered to that bot, not to a colleague's.
+      choices: new PendingChoices(),
       log,
       ...(agentBot ? { ownBotKey: () => conn?.channelKey() } : {}),
     };
@@ -90,7 +93,11 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
       token: botToken,
       log,
       state: botState,
-      policy,
+      // An agent's bot answers when addressed (mention, reply, DM); "every
+      // message" is the kernel's to hand out (`conversationDelivery`), or N
+      // agents would all answer one message.
+      policy: agentBot && policy.guildPolicy === 'all' ? { ...policy, guildPolicy: 'mention' as const } : policy,
+      isSiblingBot: (userId) => isOwnBot(userId),
       messageContentIntent,
       guildMembersIntent,
       enableSlashCommand: enableSlashCommand && !agentBot,
@@ -168,6 +175,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
       startAgentBot: (agentToken, app) => {
         const bot = connectBot(agentToken, true);
         return {
+          botUserId: () => bot.conn.self()?.id,
           botKey: discordBotChannelKey(app.id),
           appId: app.id,
           name: app.name,

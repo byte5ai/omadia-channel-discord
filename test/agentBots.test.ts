@@ -102,10 +102,14 @@ const mira = async (): Promise<DiscordApplication> => ({ id: MIRA_APP, name: 'Mi
 const input = (token: string) => ({ agentSlug: 'mira', agentDisplayName: 'Mira', credentials: { bot_token: token } });
 
 describe('identity provider', () => {
-  it('checks the token, keeps it in the vault, connects the bot and returns discord-app:<appId>', async () => {
+  it('identify names the bot without a side effect; provision keeps the token and connects it', async () => {
     const r = rig(mira);
-    const out = await r.provider.provision(input(MIRA_TOKEN));
-    assert.deepEqual(out, { ok: true, channelKey: `discord-app:${MIRA_APP}`, externalRef: 'Mira', displayName: 'Mira' });
+    const named = await r.provider.identify(input(MIRA_TOKEN));
+    assert.deepEqual(named, { ok: true, channelKey: `discord-app:${MIRA_APP}`, externalRef: 'Mira', displayName: 'Mira' });
+    assert.equal(r.secrets.data.size, 0, 'identify stores nothing');
+    assert.deepEqual(r.started, [], 'identify connects nothing');
+    const out = await r.provider.provision(input(MIRA_TOKEN), `discord-app:${MIRA_APP}`);
+    assert.deepEqual(out, { ok: true });
     assert.equal(r.secrets.data.get(`${AGENT_BOT_TOKEN_PREFIX}${MIRA_APP}`), MIRA_TOKEN);
     assert.deepEqual(r.started, [MIRA_APP]);
     assert.equal(r.logs.join('\n').includes(MIRA_TOKEN), false, 'the token is never logged');
@@ -115,15 +119,15 @@ describe('identity provider', () => {
   it('refuses a malformed token without asking Discord, and the channel’s own token', async () => {
     let asked = 0;
     const r = rig(async () => (asked++, mira()));
-    assert.equal((await r.provider.provision(input('nope'))).ok, false);
-    const own = await r.provider.provision(input(DEFAULT_TOKEN));
+    assert.equal((await r.provider.identify(input('nope'))).ok, false);
+    const own = await r.provider.identify(input(DEFAULT_TOKEN));
     assert.equal(own.ok === false && own.code, 'already_in_use');
     assert.equal(asked, 0);
   });
 
   it('refuses the channel’s own application under another token', async () => {
     const r = rig(async () => ({ id: DEFAULT_APP, name: 'Colleague' }));
-    const out = await r.provider.provision(input(MIRA_TOKEN));
+    const out = await r.provider.identify(input(MIRA_TOKEN));
     assert.equal(out.ok === false && out.code, 'already_in_use');
     assert.equal(r.secrets.data.size, 0);
   });
@@ -132,18 +136,18 @@ describe('identity provider', () => {
     const rejected = rig(async () => {
       throw Object.assign(new Error('Discord answered 401'), { status: 401 });
     });
-    const a = await rejected.provider.provision(input(MIRA_TOKEN));
+    const a = await rejected.provider.identify(input(MIRA_TOKEN));
     assert.equal(a.ok === false && a.code, 'invalid_credentials');
     const down = rig(async () => {
       throw new Error('fetch failed');
     });
-    const b = await down.provider.provision(input(MIRA_TOKEN));
+    const b = await down.provider.identify(input(MIRA_TOKEN));
     assert.equal(b.ok === false && b.code, 'unreachable');
   });
 
   it('release disconnects the bot and deletes its token', async () => {
     const r = rig(mira);
-    await r.provider.provision(input(MIRA_TOKEN));
+    await r.provider.provision(input(MIRA_TOKEN), `discord-app:${MIRA_APP}`);
     const bot = r.fleet.agentBot(`discord-app:${MIRA_APP}`) as DiscordBotRuntime & { closed: number };
     await r.provider.release(`discord-app:${MIRA_APP}`);
     assert.equal(bot.closed, 1);
@@ -155,8 +159,43 @@ describe('identity provider', () => {
     const r = rig(mira);
     r.secrets.data.set(`${AGENT_BOT_TOKEN_PREFIX}${MIRA_APP}`, MIRA_TOKEN);
     r.secrets.data.set('discord_bot_token', DEFAULT_TOKEN);
-    await startStoredAgentBots(r.deps);
+    await startStoredAgentBots(r.deps, async () => undefined);
     assert.deepEqual(r.fleet.agentBotKeys(), [`discord-app:${MIRA_APP}`]);
+  });
+
+  it('boot retries while Discord is unreachable; a rejected token stays stopped', async () => {
+    let calls = 0;
+    const r = rig(async () => {
+      calls += 1;
+      if (calls < 3) throw new Error('fetch failed');
+      return mira();
+    });
+    r.secrets.data.set(`${AGENT_BOT_TOKEN_PREFIX}${MIRA_APP}`, MIRA_TOKEN);
+    const states: string[] = [];
+    await startStoredAgentBots(r.deps, async () => void states.push((await r.provider.status!(`discord-app:${MIRA_APP}`)).state));
+    assert.deepEqual(states, ['unknown', 'unknown']);
+    assert.deepEqual(r.fleet.agentBotKeys(), [`discord-app:${MIRA_APP}`]);
+    const rejected = rig(async () => {
+      throw Object.assign(new Error('Discord answered 401'), { status: 401 });
+    });
+    rejected.secrets.data.set(`${AGENT_BOT_TOKEN_PREFIX}${MIRA_APP}`, MIRA_TOKEN);
+    let slept = 0;
+    await startStoredAgentBots(rejected.deps, async () => void (slept += 1));
+    assert.equal(slept, 0);
+    assert.deepEqual(rejected.fleet.agentBotKeys(), []);
+  });
+
+  it('a bot replaced under its key is closed first, and nothing is held after closeAll', async () => {
+    const r = rig(mira);
+    const first = runtime(MIRA_APP);
+    await r.fleet.add(first);
+    await r.fleet.add(runtime(MIRA_APP));
+    assert.equal(first.closed, 1);
+    await r.fleet.closeAll();
+    const late = runtime(MIRA_APP);
+    assert.equal(await r.fleet.add(late), false);
+    assert.equal(late.closed, 1);
+    assert.equal((await r.provider.provision(input(MIRA_TOKEN), `discord-app:${MIRA_APP}`)).ok, false);
   });
 });
 
@@ -164,7 +203,7 @@ describe('fleet', () => {
   it('a send for an agent bot goes out through exactly that bot; an unknown key is unreachable', async () => {
     const posted: string[] = [];
     const r = rig(mira, posted);
-    r.fleet.add(runtime(MIRA_APP, posted));
+    await r.fleet.add(runtime(MIRA_APP, posted));
     const send = createDiscordConversationSendProvider((key) => r.fleet.sendDepsFor(key));
     assert.equal((await send.sendToConversation(CHANNEL, { text: 'Hallo' }, { asChannelKey: `discord-app:${MIRA_APP}` })).outcome, 'delivered');
     assert.equal((await send.sendToConversation(CHANNEL, { text: 'Standard' })).outcome, 'delivered');
@@ -175,8 +214,8 @@ describe('fleet', () => {
 
   it('presentIn lists the agent bots that can see the channel', async () => {
     const r = rig(mira);
-    r.fleet.add(runtime(MIRA_APP, [], true));
-    r.fleet.add(runtime('444444444444444444', [], false));
+    await r.fleet.add(runtime(MIRA_APP, [], true));
+    await r.fleet.add(runtime('444444444444444444', [], false));
     assert.deepEqual(await r.fleet.presentIn(CHANNEL), [`discord-app:${MIRA_APP}`]);
   });
 });
