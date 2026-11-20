@@ -253,7 +253,7 @@ async function reactAs(
   if (!asChannelKey?.trim()) return unreachable('not_permitted', 'a reaction names no Discord bot - nothing was set');
   const deps = botFor(lookup, asChannelKey);
   if (isUnreachable(deps)) return deps;
-  const emoji = REACTION_EMOJI[reaction];
+  const emoji = Object.hasOwn(REACTION_EMOJI, reaction) ? REACTION_EMOJI[reaction] : undefined;
   if (!emoji) return unreachable('channel_error', `this Discord channel has no reaction '${String(reaction)}'`);
   if (!SNOWFLAKE.test(conversationId) || !SNOWFLAKE.test(messageId)) {
     return unreachable('no_binding', `'${conversationId}' / '${messageId}' is not a Discord channel and message id`);
