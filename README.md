@@ -24,7 +24,7 @@ omadia is a self-hostable agentic OS: compose multi-agent teams from signed plug
 
 Connects a Discord bot (via the discord.js Gateway) to omadia. It picks up direct messages, `@mentions` in servers, and the slash commands `/ask`, `/agent` and `/agents`, forwards each one to the omadia agent that serves the conversation, and returns the reply on the same thread.
 
-Answers read like a colleague's message: plain text, no status line, buttons or reaction on your message. While an agent works the bot shows "typing…"; if work takes clearly longer it says so once, and a slow slash command is answered as a normal message instead of failing.
+Answers read like a colleague's message: plain text, no status line, buttons or reaction on your message. While an agent works the bot shows "typing…"; if work takes clearly longer the agent says so once, in its own name, and a slow slash command is answered as a normal message instead of failing.
 
 ## Reaching an agent
 
@@ -36,11 +36,15 @@ Answers read like a colleague's message: plain text, no status line, buttons or 
 | `/agents` | Lists the agents you can choose here. |
 | `/agent` | Clears your choice; the conversation's binding or default applies again. |
 
-The choice is stored by omadia per user and conversation, so it survives a restart, and two people in one channel can talk to different agents. The commands are carried out by the omadia kernel; the plugin only passes the text on.
+The choice is stored by omadia per user and conversation, so it survives a restart, and two people in one channel can talk to different agents. A thread is its own conversation, so a choice made in a channel does not carry into its threads. The plugin passes the text on unchanged (the slash commands stand for exactly the text you would type); omadia carries the commands out and answers. Typed as a plain message, `/agent` alone clears the choice and `/agents` shows the list.
 
 **One bot per agent (own name and avatar in Discord) is not supported yet.** Discord has no API to create bots, so every agent would cost you its own Application in the Developer Portal, its own token, its own invite to each server and its own gateway connection and intent settings, and this plugin takes exactly one token and has no binding key per bot. If you need it today, the choice via `/agent` is the way. With several agents in a conversation the bot puts a short name line ("Paul: …") before an answer where the speaker would otherwise be unclear, never on every message of a one-agent conversation; a colleague's contribution appears as "Paul: …" in the text.
 
 If no agent is bound to a channel, the agent is disabled or not available to you, the bot answers with a system message that says so, never with another agent.
+
+## Notifications from omadia
+
+omadia can also write to you on its own initiative (a reminder, an escalation): as a direct message to one person, or as a post into a channel the bot can see. These arrive as plain system messages from the bot; because this is one bot, they are never sent as an individual agent. Direct messages respect *Allow DMs* and the allowlist. Polls and question cards are not offered in Discord: an agent asks a numbered question in the chat instead, and you answer by typing the number.
 
 ## Server channels (groups)
 
@@ -48,7 +52,7 @@ omadia answers in a group only when it knows who is in the channel. Discord send
 
 ## How it works in omadia
 
-A channel plugin (`kind: channel`). The omadia kernel activates it from `manifest.yaml`, then it opens the Discord Gateway connection. Each inbound message goes to the orchestrator chat agent, and the response comes back to Discord. The channel needs an LLM provider assigned to the orchestrator first, otherwise there is no agent to answer.
+A channel plugin (`kind: channel`) for omadia core 1.74 or newer (placeholder floor; the final version is set at release). The omadia kernel activates it from `manifest.yaml`, then it opens the Discord Gateway connection. Each inbound message goes to the orchestrator chat agent, and the response comes back to Discord. The channel needs an LLM provider assigned to the orchestrator first, otherwise there is no agent to answer.
 
 ## Install
 

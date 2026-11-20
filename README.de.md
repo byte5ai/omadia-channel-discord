@@ -24,7 +24,7 @@ omadia ist ein selbst-hostbares agentisches OS: stelle Multi-Agent-Teams aus sig
 
 Verbindet einen Discord-Bot (über das discord.js-Gateway) mit omadia. Es nimmt Direktnachrichten, `@mentions` in Servern und die Slash-Befehle `/ask`, `/agent` und `/agents` auf, leitet jede davon an den omadia-Agenten weiter, der die Unterhaltung bedient, und gibt die Antwort im selben Thread zurück.
 
-Antworten lesen sich wie die Nachricht einer Kollegin: reiner Text, keine Statuszeile, keine Buttons und keine Reaktion auf deine Nachricht. Während ein Agent arbeitet, zeigt der Bot „schreibt …"; dauert die Arbeit deutlich länger, sagt er das einmal, und ein langsamer Slash-Befehl wird als normale Nachricht beantwortet, statt zu scheitern.
+Antworten lesen sich wie die Nachricht einer Kollegin: reiner Text, keine Statuszeile, keine Buttons und keine Reaktion auf deine Nachricht. Während ein Agent arbeitet, zeigt der Bot „schreibt …"; dauert die Arbeit deutlich länger, sagt der Agent das einmal, mit eigenen Worten und unter eigenem Namen, und ein langsamer Slash-Befehl wird als normale Nachricht beantwortet, statt zu scheitern.
 
 ## Einen Agenten erreichen
 
@@ -36,11 +36,15 @@ Antworten lesen sich wie die Nachricht einer Kollegin: reiner Text, keine Status
 | `/agents` | Listet die Agenten, die du hier wählen kannst. |
 | `/agent` | Hebt deine Wahl auf; es gilt wieder die Zuordnung des Kanals bzw. der Standard. |
 
-omadia speichert die Wahl pro Person und Unterhaltung, sie übersteht also einen Neustart, und zwei Personen im selben Kanal können mit verschiedenen Agenten sprechen. Die Befehle führt der omadia-Kernel aus; das Plugin reicht nur den Text weiter.
+omadia speichert die Wahl pro Person und Unterhaltung, sie übersteht also einen Neustart, und zwei Personen im selben Kanal können mit verschiedenen Agenten sprechen. Ein Thread ist eine eigene Unterhaltung, eine Wahl im Kanal gilt also nicht in dessen Threads. Das Plugin reicht den Text unverändert weiter (die Slash-Befehle stehen für genau den Text, den du tippen würdest); omadia führt die Befehle aus und antwortet. Als normale Nachricht getippt, hebt `/agent` allein die Wahl auf und `/agents` zeigt die Liste.
 
 **Ein Bot pro Agent (eigener Name und Avatar in Discord) wird noch nicht unterstützt.** Discord hat keine API zum Anlegen von Bots; jeder Agent würde dich also eine eigene Application im Developer Portal, ein eigenes Token, eine eigene Einladung auf jeden Server sowie eine eigene Gateway-Verbindung samt Intent-Einstellungen kosten, und dieses Plugin nimmt genau ein Token und kennt keinen Zuordnungsschlüssel pro Bot. Wer es heute braucht, nutzt die Wahl per `/agent`. Sprechen mehrere Agenten in einer Unterhaltung, setzt der Bot eine kurze Namenszeile („Paul: …") vor eine Antwort, wo der Sprecher sonst unklar wäre, nie vor jede Nachricht einer Ein-Agenten-Unterhaltung; der Beitrag einer Kollegin erscheint als „Paul: …" im Text.
 
 Ist einem Kanal kein Agent zugeordnet, ist der Agent deaktiviert oder für dich nicht verfügbar, antwortet der Bot mit einer Systemnachricht, die das sagt, nie mit einem anderen Agenten.
+
+## Benachrichtigungen von omadia
+
+omadia kann dich auch von sich aus anschreiben (eine Erinnerung, eine Eskalation): als Direktnachricht an eine Person oder als Beitrag in einen Kanal, den der Bot sieht. Das kommt als schlichte Systemnachricht des Bots; da es ein Bot ist, nie als einzelner Agent. Direktnachrichten beachten *Direktnachrichten zulassen* und die Allowlist. Umfragen und Fragekarten gibt es in Discord nicht: ein Agent stellt stattdessen im Chat eine nummerierte Frage, die du durch Tippen der Nummer beantwortest.
 
 ## Server-Kanäle (Gruppen)
 
@@ -48,7 +52,7 @@ omadia antwortet in einer Gruppe nur, wenn es weiß, wer im Kanal ist. Discord l
 
 ## So funktioniert es in omadia
 
-Ein Channel-Plugin (`kind: channel`). Der omadia-Kernel aktiviert es aus der `manifest.yaml`, dann öffnet es die Discord-Gateway-Verbindung. Jede eingehende Nachricht geht an den Orchestrator-Chat-Agenten, und die Antwort kommt zurück nach Discord. Der Channel braucht zuerst einen dem Orchestrator zugewiesenen LLM-Provider, sonst gibt es keinen Agenten, der antworten kann.
+Ein Channel-Plugin (`kind: channel`) für omadia core 1.74 oder neuer (Platzhalter-Untergrenze; die endgültige Version setzt das Release). Der omadia-Kernel aktiviert es aus der `manifest.yaml`, dann öffnet es die Discord-Gateway-Verbindung. Jede eingehende Nachricht geht an den Orchestrator-Chat-Agenten, und die Antwort kommt zurück nach Discord. Der Channel braucht zuerst einen dem Orchestrator zugewiesenen LLM-Provider, sonst gibt es keinen Agenten, der antworten kann.
 
 ## Installation
 

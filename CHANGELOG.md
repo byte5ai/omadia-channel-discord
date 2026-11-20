@@ -16,23 +16,46 @@ setting); do not publish before that kernel runs.
   AI disclosure line stays, as the kernel folds it into the text by the
   operator's frequency setting. The invite URL no longer asks for the Add
   Reactions permission (existing invites keep it).
-- New slash commands `/agent [name]` and `/agents`. The text (`/agent Mira`,
-  `/agent`, `/agents`) is carried out by the kernel's agent-selection service
-  (kernel #2055) and confirmed by a `system` notice. Without that service the
-  text flows on as an ordinary message.
-- Routing is fail-loud: a binding the kernel rejects (agent disabled, deleted,
-  not available to the sender, nothing bound) is answered with the kernel's
-  `system` notice instead of falling back to the default agent. The sender
-  (`user:discord-user:<id>`) and locale are passed to `channelResolver`.
+- New slash commands `/agent [name]` and `/agents`. The channel passes the text
+  (`/agent Mira`, `/agent` clears the choice, `/agents` lists) on unchanged,
+  like anything typed; the ChatAgent the kernel's channel resolver returns
+  carries it out and answers with a `system` notice. The channel has no
+  `agentSelection` call, no command parser and no `optional_requires` entry
+  for it (S1 contract, kernel #2055 / epic #2042).
+- Routing follows the S1 contract: `reject` (there is no `fallback`) still
+  hands the text to the ChatAgent the resolver returns, which answers with the
+  kernel's `system` notice, so `/agent` works even with nothing bound; an
+  answer to a reject that is not from `system` is replaced by the notice. A
+  channel resolver that throws is a `system` text, never another agent. With
+  nothing bound, `/agent` is answered by the conversation's key (its own
+  selection), not the server's.
+- The sender is `channelUserPrincipal({kind: 'discord-user', id})` from the SDK
+  (`user:discord-user:<snowflake>`, or `user:<email>` when the channel ever
+  carries a verified address), the one principal form for every channel, in
+  the resolver context and in the turn origin.
+- An answer without a speaker is no longer sent with a warning: the kernel
+  stamps every answer (INV-4), so a missing speaker is a contract violation.
+  The text is not posted (fail closed, nobody can be named for it); the user
+  gets a `system` notice and the log an error.
 - Pace: typing indicator refreshed every 8 s, one acknowledgement after 8 s of
   work, and a slash command that outlives its 15 minute interaction token is
-  answered as a normal channel message.
+  answered as a normal channel message. The acknowledgement is the resolved
+  agent's own words and goes out under its speaker, no longer as `system`
+  (without a known speaker nothing is posted).
+- Kernel-initiated sends: a targeted-send provider (DM to one person, by
+  `user:discord-user:<id>`) and a conversation-send provider (post into a
+  channel or thread), plain text. They declare no own identity (one bot), no
+  poll and no question card; a request naming an identity, a poll or a card is
+  refused with a named outcome and nothing is posted. DMs respect *Allow DMs*
+  and the allowlist.
 - Group channels: the turn states `conversationType` (`direct` / `group`) and
   the sender in its origin, and the plugin registers a conversation roster
   provider (DM complete; server channel complete with the new
   `guild_members_intent` setting, otherwise unknown; servers over 5,000
   members partial).
 - New setting `guild_members_intent` (privileged Server Members intent).
+- `compat.core` is `>=1.74.0 <2.0`, a placeholder floor for the kernel release
+  with the S1 routing contract; the release session sets the final version.
 - One bot per agent is not supported; the README says why and what it would
   cost an operator.
 - Tests (`npm test`, `node --test` with `tsx`).
