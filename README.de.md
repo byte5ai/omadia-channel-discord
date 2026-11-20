@@ -54,7 +54,7 @@ omadia antwortet in einer Gruppe nur, wenn es weiß, wer im Kanal ist. Discord l
 
 ## So funktioniert es in omadia
 
-Ein Channel-Plugin (`kind: channel`) für omadia core 1.76 oder neuer (Platzhalter-Untergrenze; die endgültige Version setzt das Release). Der omadia-Kernel aktiviert es aus der `manifest.yaml`, dann öffnet es die Discord-Gateway-Verbindung. Jede eingehende Nachricht geht an den Orchestrator-Chat-Agenten, und die Antwort kommt zurück nach Discord. Der Channel braucht zuerst einen dem Orchestrator zugewiesenen LLM-Provider, sonst gibt es keinen Agenten, der antworten kann.
+Ein Channel-Plugin (`kind: channel`) für omadia core 1.75 oder neuer (Platzhalter-Untergrenze; die endgültige Version setzt das Release). Der omadia-Kernel aktiviert es aus der `manifest.yaml`, dann öffnet es die Discord-Gateway-Verbindung. Jede eingehende Nachricht geht an den Orchestrator-Chat-Agenten, und die Antwort kommt zurück nach Discord. Der Channel braucht zuerst einen dem Orchestrator zugewiesenen LLM-Provider, sonst gibt es keinen Agenten, der antworten kann.
 
 ## Installation
 

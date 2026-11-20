@@ -81,7 +81,7 @@ setting); do not publish before that kernel runs.
   `guild_members_intent` setting, otherwise unknown; servers over 5,000
   members partial).
 - New setting `guild_members_intent` (privileged Server Members intent).
-- `compat.core` is `>=1.76.0 <2.0`, a placeholder floor for the kernel release
+- `compat.core` is `>=1.75.0 <2.0`, a placeholder floor for the kernel release
   with the S1 routing contract; the release session sets the final version.
 - One bot per agent is not supported; the README says why and what it would
   cost an operator.

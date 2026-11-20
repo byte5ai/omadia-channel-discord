@@ -33,7 +33,7 @@ compat:
   # Placeholder floor for the kernel release that carries the S1 routing
   # contract (reject with a ChatAgent, speaker before the answer, one principal
   # form); the parent session sets the final version.
-  core: ">=1.76.0 <2.0"
+  core: ">=1.75.0 <2.0"
   node: ">=20"
 
 depends_on: []
