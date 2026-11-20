@@ -51,6 +51,9 @@ export function buildIncomingTurn(channelId: string, msg: Message, text: string)
       guildId: msg.guildId ?? null,
       discordChannelId: msg.channelId,
       messageId: msg.id,
+      // A message carries no language of its own; a server's preferred locale
+      // is the best Discord states. A DM has none: omitted, not guessed.
+      ...(msg.guild?.preferredLocale ? { locale: msg.guild.preferredLocale } : {}),
     },
     rawEvent: msg,
   };
@@ -60,7 +63,10 @@ export function buildIncomingTurn(channelId: string, msg: Message, text: string)
 export interface SlashInteractionLike {
   channelId: string | null;
   guildId: string | null;
+  /** The invoking user's language. */
   locale?: string;
+  /** The server's preferred language, when the command ran in one. */
+  guildLocale?: string | null;
   user: { id: string; globalName?: string | null; username: string };
 }
 
@@ -73,6 +79,7 @@ export interface SlashInteractionLike {
 export function buildSlashTurn(channelId: string, interaction: SlashInteractionLike, text: string): IncomingTurn {
   const conversationId = interaction.channelId ?? `dm:${interaction.user.id}`;
   const inGuild = interaction.guildId !== null;
+  const locale = interaction.locale ?? interaction.guildLocale ?? undefined;
   return {
     channelId,
     conversationId,
@@ -90,7 +97,7 @@ export function buildSlashTurn(channelId: string, interaction: SlashInteractionL
       isDm: !inGuild,
       guildId: interaction.guildId,
       discordChannelId: interaction.channelId,
-      ...(interaction.locale ? { locale: interaction.locale } : {}),
+      ...(locale ? { locale } : {}),
     },
   };
 }
