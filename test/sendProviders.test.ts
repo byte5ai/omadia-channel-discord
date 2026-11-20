@@ -1,5 +1,6 @@
 // Kernel-initiated sends (#330 B3/C3b, #2043): DM one person, post into a
-// channel. Text only; no identity of its own, no poll, no card.
+// channel. Text only, through exactly the bot `asChannelKey` names; no poll,
+// no card.
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -46,17 +47,21 @@ function setup(over: Partial<SendProviderDeps> = {}, failWith?: { channel?: Erro
     allowDms: true,
     ...over,
   };
-  return { deps, posted };
+  // One bot: no key and its own key name it, nothing else does.
+  const lookup = (key: string | undefined) => (key === undefined || key === OWN_KEY ? deps : undefined);
+  return { deps: lookup, posted };
 }
+
+const OWN_KEY = 'discord-app:323456789012345678';
 
 const text = (t: string): TargetedMessage => ({ text: t });
 
 describe('capabilities', () => {
-  it('declare nothing beyond text: no own identity, poll, card, mentions or AI label', () => {
+  it('declare the named identity and nothing else: no poll, card, mentions or AI label', () => {
     const { deps } = setup();
     for (const provider of [createDiscordTargetedSendProvider(deps), createDiscordConversationSendProvider(deps)]) {
       assert.equal(provider.channelType, 'discord');
-      assert.deepEqual({ ...provider.supports }, {});
+      assert.deepEqual({ ...provider.supports }, { asChannelKey: true });
     }
   });
 });
@@ -84,7 +89,7 @@ describe('targeted send (a DM to one person)', () => {
     assert.deepEqual(posted, []);
   });
 
-  it('refuses to send as a named identity: there is one bot, never another identity (kernel contract)', async () => {
+  it('refuses to send as an identity that does not run here, never through another bot (kernel contract)', async () => {
     const { deps, posted } = setup();
     const out = await createDiscordTargetedSendProvider(deps).sendToUser(
       { principalId: `discord-user:${USER}` },
@@ -138,7 +143,7 @@ describe('conversation send (a post into a channel)', () => {
     assert.deepEqual(posted, [{ target: CHANNEL, content: 'Hinweis' }]);
   });
 
-  it('refuses a named identity, a poll, a card and a non-channel id', async () => {
+  it('refuses an unknown identity, a poll, a card and a non-channel id', async () => {
     const { deps, posted } = setup();
     const provider = createDiscordConversationSendProvider(deps);
     const identity = await provider.sendToConversation(CHANNEL, text('x'), { asChannelKey: 'discord:agent-mira' });

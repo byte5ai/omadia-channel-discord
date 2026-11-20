@@ -15,9 +15,10 @@ import { DISCORD_CHANNEL_TYPE } from './renderer.js';
 
 /**
  * The key the kernel knows this bot's identity under: `discord-app:<application-id>` (a
- * Discord bot user has the id of its application). Discord has no binding key
- * per bot of its own yet, so this is the one this plugin would name as
- * `asChannelKey`; it stays the same across restarts and tokens.
+ * Discord bot user has the id of its application). The same string is the
+ * routing key of an agent's own bot (spec 2042 §5.3), `asChannelKey` on sends
+ * and `receivedByChannelKey` on events; it stays the same across restarts and
+ * tokens.
  */
 export function discordBotChannelKey(applicationId: string): string {
   return `discord-app:${applicationId}`;

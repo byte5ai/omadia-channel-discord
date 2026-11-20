@@ -155,9 +155,10 @@ export interface ProactivePost {
 
 /**
  * A proactive post: a message the kernel asked for (a notification to a person
- * or into a channel), not the answer to a received message. It goes out as a
- * `system` message: this channel has one bot identity, so nothing is posted in
- * an agent's own name. Returns undefined when there was nothing to send.
+ * or into a channel), not the answer to a received message. The text goes out
+ * as it is, with no name line: through an agent's own bot it is that agent's
+ * words, through the shared bot it is the kernel's (which puts any name into
+ * the text itself). Returns undefined when there was nothing to send.
  */
 export async function deliverProactive(
   target: { send: (o: BaseMessageOptions) => Promise<unknown> },

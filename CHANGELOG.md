@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+An agent's own Discord bot (byte5ai/omadia#2042, spec §5.3, §8 item 20).
+Needs a kernel with `registerAgentIdentityProvider` (S7); on an older kernel
+the plugin runs its own bot only, as before.
+
+- **One bot per agent** next to the installation's own bot: the plugin
+  registers an `AgentIdentityProvider` (field: bot token). The token is checked
+  with `GET /oauth2/applications/@me`, stored in the plugin vault as
+  `agent_bot_token_<appId>`, and the bot connects to the Gateway (no slash
+  commands). Boot reconnects every stored bot; removal disconnects it and
+  deletes the token. New permission `secrets.runtime_write`.
+- **An agent bot resolves on its own key `discord-app:<appId>`** and answers
+  only when the kernel reports the key as that agent's identity (`exclusive`);
+  otherwise a system notice, never another agent. No name line.
+- **Sends and rosters per bot**: the providers declare `asChannelKey` and post
+  through exactly the bot named (unknown key: unreachable); `presentIn` tells
+  the kernel which agent bots can see a channel.
+
 ## 0.2.0
 
 Agents as virtual employees (omadia epic #2042, issue #5). Needs the omadia

@@ -47,6 +47,14 @@ export interface TurnDeps {
   singleton: () => ChatAgent | undefined;
   choices: PendingChoices;
   log: (level: LogLevel, message: string, context?: Record<string, unknown>) => void;
+  /**
+   * Spec 2042 §5.3 — set for an agent's own bot: its key
+   * `discord-app:<appId>` (undefined until the bot is connected). Every turn
+   * is resolved on that key alone, and only an EXCLUSIVE answer (the key IS
+   * the agent's identity) may answer: a bot named after one agent never
+   * answers as another.
+   */
+  ownBotKey?: () => string | undefined;
 }
 
 /** A turn whose agent is resolved but which has not run yet. */
@@ -67,6 +75,8 @@ export interface PlannedTurn {
 const NO_AGENT_TEXT = 'Diesem Kanal ist kein Agent zugeordnet.';
 const ROUTING_FAILED_TEXT = 'Der zuständige Agent ist gerade nicht erreichbar. Bitte versuche es später erneut.';
 const REJECT_ANSWER_TEXT = 'Hier antwortet gerade kein Agent. Mit /agents siehst du, wen du wählen kannst.';
+/** An agent's own bot the kernel does not know (any more) as that agent's identity. */
+const UNOWNED_BOT_TEXT = 'Dieser Bot ist gerade keinem Agenten zugeordnet und antwortet deshalb nicht.';
 
 /** The sender as a principal, the one form for every channel (`user:discord-user:<snowflake>`). */
 export function principalOf(turn: IncomingTurn): string {
@@ -126,12 +136,19 @@ type Route =
 export function resolveRoute(deps: TurnDeps, turn: IncomingTurn): Route {
   const locale = localeOf(turn);
   const context = { principal: principalOf(turn), ...(locale ? { locale } : {}) };
+  const ownBotKey = deps.ownBotKey ? deps.ownBotKey() ?? '' : undefined;
   let result: ChannelResolveResult | undefined;
   try {
-    result = deps.route(turn.conversationId, context);
+    result = deps.route(ownBotKey ?? turn.conversationId, context);
   } catch (err) {
     deps.log('error', 'discord agent resolution failed', { error: (err as Error).message });
     return { kind: 'notice', answer: systemAnswer(ROUTING_FAILED_TEXT) };
+  }
+  if (ownBotKey !== undefined && result?.exclusive !== true) {
+    // The kernel does not know this bot as an agent's identity (removed, or
+    // not registered yet): its name belongs to an agent, so nobody else answers.
+    deps.log('warn', 'discord agent bot is no agent\'s identity; turn refused', { botKey: ownBotKey });
+    return { kind: 'notice', answer: systemAnswer(UNOWNED_BOT_TEXT) };
   }
   if (!result) {
     const singleton = deps.singleton();
