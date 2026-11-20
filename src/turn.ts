@@ -1,13 +1,12 @@
 import {
-  CHANNEL_RESOLVER_SERVICE,
   channelUserPrincipal,
   isNoReply,
   logNoReplyDrop,
   parsePrincipal,
   parseSessionScope,
   type AgentSpeaker,
-  type ChannelBindingResolver,
   type ChannelResolveResult,
+  type ChannelRouteContext,
   type ChatAgent,
   type IncomingTurn,
   type LogLevel,
@@ -33,9 +32,19 @@ import { DISCORD_CHANNEL_TYPE } from './renderer.js';
  */
 
 export interface TurnDeps {
-  services: { get<T>(name: string): T | undefined };
-  /** The agent of a host without a channel resolver (single-agent / pre-US7). */
-  defaultAgent: ChatAgent;
+  /**
+   * The full routing result for a conversation key (the SDK's
+   * `resolveChannelRoute`): decision, the ChatAgent (also on a reject), notice
+   * and speaker. `undefined` only on a host without a channel resolver.
+   */
+  route: (channelKey: string, context: ChannelRouteContext) => ChannelResolveResult | undefined;
+  /**
+   * The shared `chatAgent@1`, asked for ONLY when `route` is `undefined` (a
+   * host with no channel resolver, where it is the deployment's one agent).
+   * With a resolver it is never consulted: from the S1 contract on it refuses
+   * every non-canvas turn, and a fallback to it would bypass routing.
+   */
+  singleton: () => ChatAgent | undefined;
   choices: PendingChoices;
   log: (level: LogLevel, message: string, context?: Record<string, unknown>) => void;
 }
@@ -64,11 +73,12 @@ export function principalOf(turn: IncomingTurn): string {
   return channelUserPrincipal(turn.userRef);
 }
 
-function localeOf(turn: IncomingTurn): string | undefined {
+/** The sender's language for notice texts: `de` or `en`, else none (the kernel then writes German). */
+export function localeOf(turn: IncomingTurn): 'de' | 'en' | undefined {
   const raw = (turn.metadata as { locale?: unknown } | undefined)?.locale;
   if (typeof raw !== 'string') return undefined;
-  const language = raw.split('-')[0]?.toLowerCase();
-  return language ? language : undefined;
+  const language = raw.split(/[-_]/)[0]?.toLowerCase();
+  return language === 'de' || language === 'en' ? language : undefined;
 }
 
 /**
@@ -102,57 +112,54 @@ type Route =
   | { readonly kind: 'notice'; readonly answer: SemanticAnswer };
 
 /**
- * Resolve the agent for a turn. `channelKeys` are tried most specific first
- * (conversation, then guild): a `bound` decision wins at once. When none
- * binds, the FIRST key's reject stands, so `/agent` stores the selection for
- * the conversation, and its ChatAgent answers with the kernel's `system`
- * notice. Hosts without a resolver use the default agent.
+ * Resolve the agent for a turn, under the NARROWEST conversation key: the
+ * Discord channel id, which for a thread is the thread's own id (S1: the
+ * agent selection hangs on the `channelKey` of this call plus the principal,
+ * and a binding lies under the same key). There is no second probe for the
+ * server: a selection made with `/agent` must belong to the conversation it
+ * was made in, and a probe of the guild key would store it server-wide.
+ *
+ * A `reject` carries the resolver's ChatAgent too: it answers with the
+ * kernel's `system` notice and carries out `/agent`, so a user can still
+ * choose an agent. Only a host without a resolver uses the shared singleton.
  */
-export function resolveRoute(
-  deps: TurnDeps,
-  turn: IncomingTurn,
-  channelKeys: ReadonlyArray<string | null | undefined>,
-): Route {
-  const resolver = deps.services.get<ChannelBindingResolver>(CHANNEL_RESOLVER_SERVICE);
-  if (!resolver) return { kind: 'agent', agent: deps.defaultAgent, isRejected: false };
+export function resolveRoute(deps: TurnDeps, turn: IncomingTurn): Route {
   const locale = localeOf(turn);
   const context = { principal: principalOf(turn), ...(locale ? { locale } : {}) };
-
-  let firstReject: ChannelResolveResult | undefined;
+  let result: ChannelResolveResult | undefined;
   try {
-    for (const key of channelKeys) {
-      if (!key) continue;
-      const result = resolver.resolve(DISCORD_CHANNEL_TYPE, key, context);
-      if (result.decision === 'bound') {
-        if (!result.chatAgent) throw new Error('resolver answered bound without a chatAgent');
-        return {
-          kind: 'agent',
-          agent: result.chatAgent,
-          isRejected: false,
-          ...(result.speaker ? { speaker: result.speaker } : {}),
-        };
-      }
-      firstReject ??= result;
-    }
+    result = deps.route(turn.conversationId, context);
   } catch (err) {
     deps.log('error', 'discord agent resolution failed', { error: (err as Error).message });
     return { kind: 'notice', answer: systemAnswer(ROUTING_FAILED_TEXT) };
   }
-  if (!firstReject) return { kind: 'agent', agent: deps.defaultAgent, isRejected: false };
-  // `chatAgent` is set on a reject too: it answers with the notice and carries
-  // out `/agent`, so a user can still choose an agent. Without it (a platform
-  // before the contract) the channel says why itself.
-  if (firstReject.chatAgent) {
+  if (!result) {
+    const singleton = deps.singleton();
+    return singleton
+      ? { kind: 'agent', agent: singleton, isRejected: false }
+      : { kind: 'notice', answer: systemAnswer(NO_AGENT_TEXT) };
+  }
+  if (result.decision === 'bound') {
+    if (!result.chatAgent) {
+      deps.log('error', 'discord agent resolution failed', { error: 'resolver answered bound without a chatAgent' });
+      return { kind: 'notice', answer: systemAnswer(ROUTING_FAILED_TEXT) };
+    }
     return {
       kind: 'agent',
-      agent: firstReject.chatAgent,
-      isRejected: true,
-      ...(firstReject.notice ? { notice: firstReject.notice } : {}),
+      agent: result.chatAgent,
+      isRejected: false,
+      ...(result.speaker ? { speaker: result.speaker } : {}),
     };
   }
+  // Without a ChatAgent (a platform before the contract) the channel says why itself.
+  if (!result.chatAgent) {
+    return { kind: 'notice', answer: result.notice ? noticeAnswer(result.notice) : systemAnswer(NO_AGENT_TEXT) };
+  }
   return {
-    kind: 'notice',
-    answer: firstReject.notice ? noticeAnswer(firstReject.notice) : systemAnswer(NO_AGENT_TEXT),
+    kind: 'agent',
+    agent: result.chatAgent,
+    isRejected: true,
+    ...(result.notice ? { notice: result.notice } : {}),
   };
 }
 
@@ -172,8 +179,7 @@ function rejectedAnswer(answer: SemanticAnswer, notice: SystemNotice | undefined
  * before it answers, so the connection can acknowledge long work in its name.
  */
 export function planTurn(deps: TurnDeps, turn: IncomingTurn): PlannedTurn {
-  const guildId = (turn.metadata as { guildId?: string | null } | undefined)?.guildId;
-  const route = resolveRoute(deps, turn, [turn.conversationId, guildId]);
+  const route = resolveRoute(deps, turn);
   if (route.kind === 'notice') return { run: async () => route.answer };
 
   return {

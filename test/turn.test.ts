@@ -32,8 +32,9 @@ const runTurn = (d: TurnDeps, t: IncomingTurn) => planTurn(d, t).run();
 
 function deps(services: Record<string, unknown>, agent: ChatAgent, extra: Partial<TurnDeps> = {}): TurnDeps {
   return {
-    services: { get: <T>(name: string) => services[name] as T | undefined },
-    defaultAgent: agent,
+    route: (key, context) =>
+      (services.channelResolver as { resolve: (t: string, k: string, c: unknown) => never } | undefined)?.resolve('discord', key, context),
+    singleton: () => agent,
     choices: new PendingChoices(),
     log: () => undefined,
     ...extra,
@@ -65,18 +66,15 @@ describe('agent commands go through as plain text (spec 2042 criterion 30)', () 
   for (const command of ['/agent Mira', '/agent', '/agents']) {
     it(`"${command}" reaches the resolver's ChatAgent unchanged; the channel parses nothing`, async () => {
       const kernel = recordingAgent({ text: 'Mira ist jetzt dein Ansprechpartner.', speaker: SYSTEM });
-      const requested: string[] = [];
       const services: Record<string, unknown> = {
         channelResolver: { resolve: () => ({ decision: 'bound', chatAgent: kernel.agent, speaker: MIRA }) },
       };
-      const d: TurnDeps = {
-        ...deps(services, fakeAgent().agent),
-        services: { get: <T>(name: string) => (requested.push(name), services[name] as T | undefined) },
-      };
+      let singletonAsked = 0;
+      const d: TurnDeps = { ...deps(services, fakeAgent().agent), singleton: () => (singletonAsked += 1, undefined) };
       const answer = await runTurn(d, turn(command));
       assert.deepEqual(kernel.texts, [command]);
       assert.deepEqual(answer?.speaker, SYSTEM);
-      assert.deepEqual(requested, ['channelResolver'], 'no agentSelection service is consulted');
+      assert.equal(singletonAsked, 0, 'no fallback to the shared chatAgent while a resolver is there');
     });
   }
 
@@ -147,32 +145,58 @@ describe('routing (S1 contract)', () => {
     assert.equal((await plan.run())?.text, 'hi');
   });
 
-  it('tries the conversation before the guild and passes the principal and locale', async () => {
+  it('resolves under the narrowest key only: the channel, never the server (selection stays per conversation)', async () => {
     const bound = recordingAgent({ text: 'von B', speaker: MIRA });
-    const resolver = resolverOf((key) =>
-      key === 'g1' ? { decision: 'bound', chatAgent: bound.agent, speaker: MIRA } : { decision: 'reject', chatAgent: fakeAgent().agent },
-    );
+    const resolver = resolverOf(() => ({ decision: 'bound', chatAgent: bound.agent, speaker: MIRA }));
     const answer = await runTurn(deps({ channelResolver: resolver.service }, fakeAgent().agent), turn('hallo'));
     assert.equal(answer?.text, 'von B');
-    const context = { principal: 'user:discord-user:u1', locale: 'de' };
-    assert.deepEqual(resolver.seen, [
-      { type: 'discord', key: 'chan-1', context },
-      { type: 'discord', key: 'g1', context },
-    ]);
+    assert.deepEqual(resolver.seen, [{ type: 'discord', key: 'chan-1', context: { principal: 'user:discord-user:u1', locale: 'de' } }]);
   });
 
-  it('with nothing bound, /agent is answered by the conversation key\'s ChatAgent (selection stays per conversation)', async () => {
+  it('a thread is its own conversation: its own channel id is the key', async () => {
+    const resolver = resolverOf(() => ({ decision: 'reject', chatAgent: fakeAgent().agent }));
+    await runTurn(
+      deps({ channelResolver: resolver.service }, fakeAgent().agent),
+      turn('hallo', { conversationId: 'thread-9', channelKey: 'thread-9', metadata: { guildId: 'g1', messageId: 'm2' } }),
+    );
+    assert.deepEqual(resolver.seen.map((c) => c.key), ['thread-9']);
+  });
+
+  it('with nothing bound, /agent is answered by the conversation key\'s ChatAgent', async () => {
     const channelAgent = recordingAgent({ text: 'gewählt', speaker: SYSTEM });
-    const guildAgent = recordingAgent({ text: 'gilde', speaker: SYSTEM });
-    const resolver = resolverOf((key) => ({ decision: 'reject', chatAgent: key === 'chan-1' ? channelAgent.agent : guildAgent.agent }));
+    const resolver = resolverOf(() => ({ decision: 'reject', chatAgent: channelAgent.agent }));
     await runTurn(deps({ channelResolver: resolver.service }, fakeAgent().agent), turn('/agent Mira'));
     assert.deepEqual(channelAgent.texts, ['/agent Mira']);
-    assert.deepEqual(guildAgent.texts, []);
   });
 
-  it('no resolver (single-agent host): the default agent answers', async () => {
+  it('no resolver (host without a registry): the shared agent answers, the one case it is asked', async () => {
     const { agent } = fakeAgent({ text: 'default', speaker: MIRA });
     assert.equal((await runTurn(deps({}, agent), turn('hallo')))?.text, 'default');
+  });
+
+  it('no resolver and no shared agent: a system text, never silence', async () => {
+    const { agent } = fakeAgent();
+    const answer = await runTurn({ ...deps({}, agent), singleton: () => undefined }, turn('hallo'));
+    assert.deepEqual(answer?.speaker, SYSTEM);
+  });
+});
+
+describe('locale of the sender', () => {
+  const locales = async (metadata: Record<string, unknown>) => {
+    const resolver = resolverOf(() => ({ decision: 'reject', chatAgent: fakeAgent().agent }));
+    await runTurn(deps({ channelResolver: resolver.service }, fakeAgent().agent), turn('hallo', { metadata }));
+    return (resolver.seen[0]?.context as { locale?: string }).locale;
+  };
+
+  it('is the language of the interaction or the server, as de or en', async () => {
+    assert.equal(await locales({ locale: 'de' }), 'de');
+    assert.equal(await locales({ locale: 'en-US' }), 'en');
+    assert.equal(await locales({ locale: 'en-GB' }), 'en');
+  });
+
+  it('is left out when unknown or not one the notices speak (no guess)', async () => {
+    assert.equal(await locales({}), undefined);
+    assert.equal(await locales({ locale: 'fr' }), undefined);
   });
 });
 

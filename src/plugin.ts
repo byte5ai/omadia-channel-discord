@@ -2,7 +2,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  CHANNEL_RESOLVER_SERVICE,
   getChatAgent,
+  resolveChannelRoute,
   InMemorySpeakerHistoryStore,
   type ChannelHandle,
   type CoreApi,
@@ -12,6 +14,7 @@ import type { PluginContext } from '@omadia/plugin-api';
 
 import { createAdminRouter } from './adminRouter.js';
 import { PendingChoices } from './choices.js';
+import { DISCORD_CHANNEL_TYPE } from './renderer.js';
 import { DiscordConnection, type GuildResponsePolicy } from './discordConnection.js';
 import { DiscordRosterProvider } from './roster.js';
 import { createDiscordConversationSendProvider, createDiscordTargetedSendProvider } from './sendProviders.js';
@@ -40,20 +43,20 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   const ignoreBots = ctx.config.get<boolean>('ignore_bots') ?? true;
   const allowlist = parseAllowlist(ctx.config.get<string>('allowlist') ?? '');
 
-  // The orchestrator's ChatAgent: the answer of a host without a channel
-  // resolver. With one, every turn resolves its own agent (src/turn.ts).
-  const agent = getChatAgent(ctx);
-  if (!agent) {
+  // A host with neither a channel resolver nor a shared agent has nobody to
+  // answer. With a resolver every turn resolves its own agent (src/turn.ts)
+  // and the shared chatAgent@1 is never used: it refuses non-canvas turns.
+  if (!ctx.services.get(CHANNEL_RESOLVER_SERVICE) && !getChatAgent(ctx)) {
     throw new Error(
-      '@omadia/channel-discord: orchestrator unavailable (getChatAgent) — the orchestrator plugin must be installed and active',
+      '@omadia/channel-discord: orchestrator unavailable (no channelResolver, no getChatAgent) — the orchestrator plugin must be installed and active',
     );
   }
 
   const state = createChannelState();
   const speakerHistory = new InMemorySpeakerHistoryStore();
   const turnDeps: TurnDeps = {
-    services: ctx.services,
-    defaultAgent: agent,
+    route: (channelKey, context) => resolveChannelRoute(ctx, DISCORD_CHANNEL_TYPE, channelKey, context),
+    singleton: () => getChatAgent(ctx),
     choices: new PendingChoices(),
     log: (level, message, context) => core.log(level, message, context),
   };

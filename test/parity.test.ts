@@ -45,8 +45,8 @@ function kernel(reply: (input: ChatTurnInput) => SemanticAnswer) {
     },
   } as unknown as ChatAgent;
   const deps: TurnDeps = {
-    services: { get: <T>(name: string) => (name === 'channelResolver' ? ({ resolve: () => ({ decision: 'bound', chatAgent: agent, speaker: MIRA }) } as T) : undefined) },
-    defaultAgent: agent,
+    route: () => ({ decision: 'bound', chatAgent: agent, speaker: MIRA }),
+    singleton: () => undefined,
     choices: new PendingChoices(),
     log: () => undefined,
   };
