@@ -11,6 +11,10 @@ describe('package and manifest', () => {
     assert.equal(manifest, pkg.version);
   });
 
+  it('requires the kernel with the S1 routing contract (placeholder floor)', () => {
+    assert.match(read('manifest.yaml'), /^\s+core: ">=1\.74\.0 <2\.0"/m);
+  });
+
   it('declares no agent selection service: /agent, /agents are plain text for the resolver\'s ChatAgent', () => {
     const manifest = read('manifest.yaml');
     assert.ok(!/agentSelection/.test(manifest.replace(/^\s*#.*$/gm, '')));
