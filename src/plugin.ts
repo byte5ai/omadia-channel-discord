@@ -6,6 +6,7 @@ import {
   InMemorySpeakerHistoryStore,
   type ChannelHandle,
   type CoreApi,
+  type LogLevel,
 } from '@omadia/channel-sdk';
 import type { PluginContext } from '@omadia/plugin-api';
 
@@ -13,6 +14,7 @@ import { createAdminRouter } from './adminRouter.js';
 import { PendingChoices } from './choices.js';
 import { DiscordConnection, type GuildResponsePolicy } from './discordConnection.js';
 import { DiscordRosterProvider } from './roster.js';
+import { createDiscordConversationSendProvider, createDiscordTargetedSendProvider } from './sendProviders.js';
 import { createChannelState } from './state.js';
 import { planTurn, type TurnDeps } from './turn.js';
 
@@ -48,6 +50,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   }
 
   const state = createChannelState();
+  const speakerHistory = new InMemorySpeakerHistoryStore();
   const turnDeps: TurnDeps = {
     services: ctx.services,
     defaultAgent: agent,
@@ -64,7 +67,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     messageContentIntent,
     guildMembersIntent,
     enableSlashCommand,
-    speakerHistory: new InMemorySpeakerHistoryStore(),
+    speakerHistory,
     planTurn: (turn) => planTurn(turnDeps, turn),
   });
 
@@ -91,6 +94,18 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
 
   // Non-blocking — login + ready + slash-command registration can exceed the
   // 10s activate budget.
+  // Kernel-initiated sends: a notification to one person, a post into a
+  // channel. Feature-detected: older kernels have no such registries.
+  const sendDeps = {
+    port: conn.sendPort(),
+    speakerHistory,
+    log: (level: LogLevel, message: string, context?: Record<string, unknown>) => core.log(level, message, context),
+    isAllowed: (userId: string | undefined, guildId: string | null) => conn.isAllowlisted(userId, guildId),
+    allowDms,
+  };
+  core.registerTargetedSendProvider?.(channelId, createDiscordTargetedSendProvider(sendDeps));
+  core.registerConversationSendProvider?.(channelId, createDiscordConversationSendProvider(sendDeps));
+
   conn.start();
 
   core.log('info', 'Discord channel activated — open the admin UI for status + the invite link', {

@@ -29,6 +29,7 @@ import {
 } from './inbound.js';
 import { acknowledgeAs, MESSAGE_PACE, runPaced, SLASH_PACE } from './pace.js';
 import type { RosterMember, RosterSource } from './roster.js';
+import type { ProactiveChannel, SendPort } from './sendProviders.js';
 import type { PlannedTurn } from './turn.js';
 import {
   AGENT_COMMAND_NAME,
@@ -375,10 +376,28 @@ export class DiscordConnection {
     return user ? toRosterMember(user) : undefined;
   }
 
-  private isAllowlisted(userId: string, guildId: string | null): boolean {
+  /**
+   * Where the kernel's proactive sends (a notification, a post into a
+   * channel) go: the same client, so they share the bot's token and rate state.
+   */
+  sendPort(): SendPort {
+    return {
+      channel: (channelId) => this.proactiveChannel(channelId),
+      directChannel: async (userId) => toProactiveChannel(await (await this.client.users.fetch(userId)).createDM()),
+    };
+  }
+
+  private async proactiveChannel(channelId: string): Promise<ProactiveChannel> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel) throw unknownChannel();
+    return toProactiveChannel(channel);
+  }
+
+  /** The channel's access policy: may this user (or, without one, this server) interact with the bot? */
+  isAllowlisted(userId: string | undefined, guildId: string | null): boolean {
     const allow = this.deps.policy.allowlist;
     if (allow.size === 0) return true;
-    if (allow.has(userId)) return true;
+    if (userId && allow.has(userId)) return true;
     if (guildId && allow.has(guildId)) return true;
     return false;
   }
@@ -408,6 +427,25 @@ function buildInviteUrl(clientId: string): string {
     scope: 'bot applications.commands',
   });
   return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
+/** Discord's own "unknown channel" REST error code, for a channel the bot cannot see. */
+const DISCORD_UNKNOWN_CHANNEL = 10003;
+
+function unknownChannel(): Error {
+  return Object.assign(new Error('unknown channel'), { code: DISCORD_UNKNOWN_CHANNEL });
+}
+
+/** A fetched channel as a place to post into; one that cannot take messages is an unknown channel. */
+function toProactiveChannel(channel: unknown): ProactiveChannel {
+  const candidate = channel as { send?: unknown; guildId?: unknown; isSendable?: () => boolean };
+  if (typeof candidate.send !== 'function' || (candidate.isSendable && !candidate.isSendable())) {
+    throw unknownChannel();
+  }
+  return {
+    send: (o) => (candidate.send as (o: unknown) => Promise<unknown>).call(channel, o),
+    guildId: typeof candidate.guildId === 'string' ? candidate.guildId : null,
+  };
 }
 
 /** A discord.js user as a roster member. */

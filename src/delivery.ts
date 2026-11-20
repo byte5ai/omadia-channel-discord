@@ -145,6 +145,40 @@ export async function deliverToChannel(
   return payloads.length > 0;
 }
 
+/** What a proactive post (a kernel send, no inbound message) reports back. */
+export interface ProactivePost {
+  /** Platform id of the first message, when Discord returned one. */
+  readonly messageId?: string;
+  /** The conversation the message went into (the DM channel for a DM). */
+  readonly conversationId?: string;
+}
+
+/**
+ * A proactive post: a message the kernel asked for (a notification to a person
+ * or into a channel), not the answer to a received message. It goes out as a
+ * `system` message: this channel has one bot identity, so nothing is posted in
+ * an agent's own name. Returns undefined when there was nothing to send.
+ */
+export async function deliverProactive(
+  target: { send: (o: BaseMessageOptions) => Promise<unknown> },
+  message: { readonly text: string; readonly attachments?: SemanticAnswer['attachments'] },
+  ctx: DeliveryContext,
+): Promise<ProactivePost | undefined> {
+  const payloads = prepare(
+    { ...systemAnswer(message.text), ...(message.attachments ? { attachments: message.attachments } : {}) },
+    ctx,
+  );
+  let post: ProactivePost | undefined;
+  for (const payload of payloads) {
+    const sent = (await target.send(payload)) as { id?: unknown; channelId?: unknown } | undefined;
+    post ??= {
+      ...(typeof sent?.id === 'string' ? { messageId: sent.id } : {}),
+      ...(typeof sent?.channelId === 'string' ? { conversationId: sent.channelId } : {}),
+    };
+  }
+  return post;
+}
+
 /**
  * Deliver the result of a paced slash-command turn. Past the interaction's
  * reply window the answer is a normal channel message (the token is dead);
