@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 Bot reactions (spec 2043 §5.14, byte5ai/omadia#2061, ADR 0027). Needs the
-kernel of byte5ai/omadia#2151 (channel-sdk 0.3.9, plugin-api 1.82.0) to be
-used; an older kernel never calls it, so `compat.core` stays as it is.
+kernel of byte5ai/omadia#2151 (channel-sdk 0.3.9, plugin-api 1.82.0);
+`compat.core` is now `>=1.82.0 <2.0`.
 
 - **A thumbs-up instead of an echo**: the conversation send provider declares
   `supports.reactions: true` and implements `react()`. `acknowledge` becomes
