@@ -10,15 +10,27 @@ import {
   type CoreApi,
   type LogLevel,
 } from '@omadia/channel-sdk';
-import type { PluginContext } from '@omadia/plugin-api';
+import type { PluginContext, RoutinesIntegration } from '@omadia/plugin-api';
 
 import { createAdminRouter } from './adminRouter.js';
 import { PendingChoices } from './choices.js';
 import { DISCORD_CHANNEL_TYPE } from './renderer.js';
 import { DiscordConnection, type GuildResponsePolicy } from './discordConnection.js';
 import { DiscordRosterProvider } from './roster.js';
-import { createDiscordConversationSendProvider, createDiscordTargetedSendProvider } from './sendProviders.js';
+import {
+  createDiscordConversationSendProvider,
+  createDiscordTargetedSendProvider,
+  type SendProviderDeps,
+} from './sendProviders.js';
+import {
+  createDiscordAgentIdentityProvider,
+  DiscordBotFleet,
+  startStoredAgentBots,
+  type AgentBotDeps,
+} from './agentBots.js';
+import { discordBotChannelKey } from './conversationEvents.js';
 import { createChannelState } from './state.js';
+import { createDiscordProactiveSend, createDiscordRoutineTurn, ROUTINES_INTEGRATION_SERVICE } from './routines.js';
 import { planTurn, type TurnDeps } from './turn.js';
 
 /**
@@ -52,43 +64,92 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     );
   }
 
+  // Triggers and routines (spec 2042 §5.12): published by the kernel only
+  // with a database. Absent = agents cannot set triggers or routines here.
+  const routines = ctx.services.get<RoutinesIntegration>(ROUTINES_INTEGRATION_SERVICE);
+
   const state = createChannelState();
   const speakerHistory = new InMemorySpeakerHistoryStore();
-  const turnDeps: TurnDeps = {
-    route: (channelKey, context) => resolveChannelRoute(ctx, DISCORD_CHANNEL_TYPE, channelKey, context),
-    singleton: () => getChatAgent(ctx),
-    choices: new PendingChoices(),
-    log: (level, message, context) => core.log(level, message, context),
+  const log = (level: LogLevel, message: string, context?: Record<string, unknown>) => core.log(level, message, context);
+  const policy = { guildPolicy, allowDms, ignoreBots, allowlist };
+  // Every bot of the installation (shared and agent bots), read when a message
+  // arrives: `fleet` exists by then.
+  const isOwnBot = (userId: string): boolean => own.conn.self()?.id === userId || fleet.isAgentBotUser(userId);
+
+  /**
+   * One Discord bot: the installation's own bot, or an agent's own bot
+   * (spec 2042 §5.3). An agent bot resolves every turn on its own key and
+   * answers only as the agent whose identity it is; it gets no slash
+   * commands (there is nothing to choose) and its answers no name line.
+   */
+  const connectBot = (botToken: string, agentBot: boolean) => {
+    let conn: DiscordConnection | undefined;
+    const turnDeps: TurnDeps = {
+      route: (channelKey, context) => resolveChannelRoute(ctx, DISCORD_CHANNEL_TYPE, channelKey, context),
+      singleton: () => getChatAgent(ctx),
+      // One bot's numbered question is answered to that bot, not to a colleague's.
+      choices: new PendingChoices(),
+      log,
+      ...(agentBot ? { ownBotKey: () => conn?.channelKey() } : {}),
+      // A trigger or routine the agent sets here delivers through this bot.
+      ...(routines
+        ? { routineTurn: createDiscordRoutineTurn(routines, channelId, () => (agentBot ? conn?.channelKey() : undefined)) }
+        : {}),
+    };
+    const botState = agentBot ? createChannelState() : state;
+    conn = new DiscordConnection({
+      channelId,
+      token: botToken,
+      log,
+      state: botState,
+      // An agent's bot answers when addressed (mention, reply, DM); "every
+      // message" is the kernel's to hand out (`conversationDelivery`), or N
+      // agents would all answer one message.
+      policy: agentBot && policy.guildPolicy === 'all' ? { ...policy, guildPolicy: 'mention' as const } : policy,
+      isSiblingBot: (userId) => isOwnBot(userId),
+      messageContentIntent,
+      guildMembersIntent,
+      enableSlashCommand: enableSlashCommand && !agentBot,
+      speakerHistory,
+      // Feature-detected: older kernels have no conversation-message registry.
+      ...(core.emitConversationMessage ? { emitConversationMessage: (event) => core.emitConversationMessage?.(event) } : {}),
+      ...(core.reportConversationMessage
+        ? { reportConversationMessage: (event) => core.reportConversationMessage?.(event) ?? Promise.resolve({ answeredCard: false }) }
+        : {}),
+      planTurn: (turn) => planTurn(turnDeps, turn),
+      ...(agentBot ? { agentBot: true } : {}),
+    });
+    const connection = conn;
+    const sendDeps: SendProviderDeps = {
+      port: connection.sendPort(),
+      speakerHistory,
+      log,
+      isAllowed: (userId, guildId) => connection.isAllowlisted(userId, guildId),
+      allowDms,
+      ...(agentBot ? { nativeIdentity: true } : {}),
+    };
+    const roster = new DiscordRosterProvider({
+      describe: (conversationId) => connection.describeConversation(conversationId),
+      self: () => connection.self(),
+      channelKey: () => connection.channelKey(),
+    });
+    connection.start();
+    return { conn: connection, state: botState, sendDeps, roster };
   };
 
-  const conn = new DiscordConnection({
-    channelId,
+  const own = connectBot(token, false);
+  const conn = own.conn;
+  const fleet = new DiscordBotFleet({
+    channelKey: () => conn.channelKey(),
+    sendDeps: own.sendDeps,
+    roster: own.roster,
     token,
-    log: (level, message, context) => core.log(level, message, context),
-    state,
-    policy: { guildPolicy, allowDms, ignoreBots, allowlist },
-    messageContentIntent,
-    guildMembersIntent,
-    enableSlashCommand,
-    speakerHistory,
-    // Feature-detected: older kernels have no conversation-message registry.
-    ...(core.emitConversationMessage ? { emitConversationMessage: (event) => core.emitConversationMessage?.(event) } : {}),
-    ...(core.reportConversationMessage
-      ? { reportConversationMessage: (event) => core.reportConversationMessage?.(event) ?? Promise.resolve({ answeredCard: false }) }
-      : {}),
-    planTurn: (turn) => planTurn(turnDeps, turn),
   });
 
-  // Who is in a conversation: the kernel's audience floor needs it to answer
-  // in a group (fail-closed without it). Feature-detected: older kernels
-  // have no roster registry.
-  core.registerRosterProvider?.(
-    channelId,
-    new DiscordRosterProvider({
-      describe: (conversationId) => conn.describeConversation(conversationId),
-      self: () => conn.self(),
-    }),
-  );
+  // Who is in a conversation, as the bot `asChannelKey` sees it: the kernel's
+  // audience floor needs it to answer in a group (fail-closed without it).
+  // Feature-detected: older kernels have no roster registry.
+  core.registerRosterProvider?.(channelId, fleet.rosterProvider());
 
   // Status / invite admin UI. web-ui renders this as an iframe (manifest
   // `admin_ui_path`); the UI fetches its JSON API with RELATIVE paths so it
@@ -100,21 +161,58 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     createAdminRouter({ uiAssetsPath, state, smokeMode: ctx.smokeMode }),
   );
 
-  // Non-blocking — login + ready + slash-command registration can exceed the
-  // 10s activate budget.
   // Kernel-initiated sends: a notification to one person, a post into a
-  // channel. Feature-detected: older kernels have no such registries.
-  const sendDeps = {
-    port: conn.sendPort(),
-    speakerHistory,
-    log: (level: LogLevel, message: string, context?: Record<string, unknown>) => core.log(level, message, context),
-    isAllowed: (userId: string | undefined, guildId: string | null) => conn.isAllowlisted(userId, guildId),
-    allowDms,
-  };
-  core.registerTargetedSendProvider?.(channelId, createDiscordTargetedSendProvider(sendDeps));
-  core.registerConversationSendProvider?.(channelId, createDiscordConversationSendProvider(sendDeps));
+  // channel, through exactly the bot `asChannelKey` names (no key: the
+  // installation's own bot). Feature-detected: older kernels have no such registries.
+  const lookup = (asChannelKey: string | undefined) => fleet.sendDepsFor(asChannelKey);
+  core.registerTargetedSendProvider?.(channelId, createDiscordTargetedSendProvider(lookup));
+  core.registerConversationSendProvider?.(channelId, createDiscordConversationSendProvider(lookup));
+  // Trigger and routine deliveries go out through the bot the conversation
+  // came through: an agent's own bot, or the installation's.
+  // Removed again on close, so nothing is delivered through a closed channel.
+  const disposeProactiveSend = routines?.publishProactiveSend(DISCORD_CHANNEL_TYPE, createDiscordProactiveSend(lookup));
+  if (routines) log('info', 'discord proactive send registered (triggers and routines deliver through the bot they were set on)');
 
-  conn.start();
+  // --- Agents' own bots (spec 2042 §5.3) --------------------------------
+  // Needs the vault write permission (tokens are stored per bot) and a kernel
+  // that takes agent identities; without either, agents keep `/agent`.
+  const secrets = ctx.secrets;
+  if (secrets.set && secrets.delete) {
+    const agentBotDeps: AgentBotDeps = {
+      fleet,
+      secrets: {
+        get: (key) => secrets.get(key),
+        keys: () => secrets.keys(),
+        set: (key, value) => secrets.set!(key, value),
+        delete: (key) => secrets.delete!(key),
+      },
+      startAgentBot: (agentToken, app) => {
+        const bot = connectBot(agentToken, true);
+        return {
+          botUserId: () => bot.conn.self()?.id,
+          botKey: discordBotChannelKey(app.id),
+          appId: app.id,
+          name: app.name,
+          sendDeps: bot.sendDeps,
+          roster: bot.roster,
+          canSee: (conversationId) => bot.conn.canSee(conversationId),
+          status: () => (bot.state.status === 'connected' ? 'connected' : bot.state.status === 'error' ? 'error' : 'connecting'),
+          close: () => bot.conn.close(),
+        };
+      },
+      log: (level, message) => core.log(level, message),
+    };
+    // In the background: Discord's REST check can exceed the activate budget.
+    void startStoredAgentBots(agentBotDeps).catch((err: unknown) =>
+      core.log('warn', `discord agent bots could not be started: ${err instanceof Error ? err.message : String(err)}`),
+    );
+    if (typeof core.registerAgentIdentityProvider === 'function') {
+      core.registerAgentIdentityProvider(channelId, createDiscordAgentIdentityProvider(agentBotDeps));
+      core.log('info', 'discord agent bots: identity provider registered (one bot per agent)');
+    } else {
+      core.log('info', 'kernel takes no agent identities — agents are reached through the shared bot only');
+    }
+  }
 
   core.log('info', 'Discord channel activated — open the admin UI for status + the invite link', {
     adminUi: '/api/discord-channel/admin/index.html',
@@ -127,7 +225,9 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
 
   return {
     async close() {
+      if (typeof disposeProactiveSend === 'function') disposeProactiveSend();
       disposeRoutes();
+      await fleet.closeAll();
       await conn.close();
     },
   };

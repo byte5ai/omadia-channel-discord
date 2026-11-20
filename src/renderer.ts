@@ -45,6 +45,11 @@ export interface RenderContext {
   /** Conversation key for the speaker history (name-line decision). */
   conversationKey: string;
   speakerHistory: SpeakerHistoryStore;
+  /**
+   * Spec 2042 §5.3 — the bot IS one agent (its own bot): Discord shows the
+   * bot's name and avatar, so no answer needs a name line.
+   */
+  nativeIdentity?: boolean;
 }
 
 /**
@@ -52,8 +57,9 @@ export interface RenderContext {
  * message: what a colleague would write, nothing more (spec 2042 §5.14).
  *
  * The SDK's reference renderer decides the text: a name line only where INV-4
- * asks for one (this channel has ONE bot identity, so the SDK adds it when
- * several agents speak in the conversation), colleagues' contributions as
+ * asks for one (the shared bot carries several agents, so the SDK adds it
+ * when several agents speak in the conversation; an agent's own bot never
+ * needs one, `nativeIdentity`), colleagues' contributions as
  * "Mira: …", a `system` notice as its own text, cards as numbered text. No
  * verifier badge, consulted footer, follow-up list, disclaimer, privacy
  * receipt or buttons: their purpose lives in the structured answer.
@@ -65,7 +71,7 @@ export interface RenderContext {
  */
 export function renderAnswer(a: SemanticAnswer, ctx: RenderContext): DiscordRenderResult {
   const plain = renderPlainAnswer(a, {
-    nativeIdentity: false,
+    nativeIdentity: ctx.nativeIdentity === true,
     conversationKey: ctx.conversationKey,
     speakerHistory: ctx.speakerHistory,
   });

@@ -146,11 +146,13 @@ export interface DiscordRosterProviderDeps {
   describe: (conversationId: string) => Promise<RosterSource | undefined>;
   /** This bot, once connected. */
   self: () => RosterMember | undefined;
+  /** The bot's routing key `discord-app:<appId>` (spec 2042 §5.3), once connected. */
+  channelKey?: () => string | undefined;
   now?: () => Date;
   ttlMs?: number;
 }
 
-/** The {@link ConversationRosterProvider} of this channel. One bot identity, so one view. */
+/** The {@link ConversationRosterProvider} of ONE bot: what that bot can see. */
 export class DiscordRosterProvider implements ConversationRosterProvider {
   readonly channelType = DISCORD_CHANNEL_TYPE;
   readonly #cache = new Map<string, { at: number; roster: ConversationRoster }>();
@@ -168,9 +170,9 @@ export class DiscordRosterProvider implements ConversationRosterProvider {
   ): Promise<ConversationRoster | undefined> {
     const self = this.deps.self();
     if (!self) return undefined;
-    // A roster is what ONE bot can see. This channel has a single identity; a
-    // request on behalf of another one gets no answer, never this bot's view.
-    if (opts?.asChannelKey !== undefined && opts.asChannelKey !== self.id) return undefined;
+    // A roster is what ONE bot can see; a request on behalf of another
+    // identity gets no answer, never this bot's view.
+    if (opts?.asChannelKey !== undefined && !this.isOwnKey(opts.asChannelKey, self)) return undefined;
 
     const nowMs = this.#now().getTime();
     const cached = this.#cache.get(conversationId);
@@ -182,5 +184,11 @@ export class DiscordRosterProvider implements ConversationRosterProvider {
     // Only a read that reached the platform is worth reusing.
     if (roster.status !== 'unknown') this.#cache.set(conversationId, { at: nowMs, roster });
     return roster;
+  }
+
+  /** `discord-app:<appId>` (the routing key) or the bot user id. */
+  private isOwnKey(asChannelKey: string, self: RosterMember): boolean {
+    const key = asChannelKey.trim().toLowerCase();
+    return key === self.id || key === this.deps.channelKey?.();
   }
 }

@@ -17,7 +17,7 @@ identity:
   kind: "channel"
   domain: "discord"
   name: "Discord"
-  version: "0.2.0"                         # === package.json "version"
+  version: "0.3.0"                         # === package.json "version"
   description: "Discord-Channel via discord.js Gateway-Bot. Routet Discord-DMs, @Erwähnungen und die Slash-Commands /ask, /agent und /agents zu den Omadia-Agenten."
   authors:
     - name: "byte5 GmbH"
@@ -30,10 +30,10 @@ identity:
     - "communication"
 
 compat:
-  # Placeholder floor for the kernel release that carries the S1 routing
-  # contract (reject with a ChatAgent, speaker before the answer, one principal
-  # form); the parent session sets the final version.
-  core: ">=1.75.0 <2.0"
+  # The kernel that ships agent channel identities (plugin-api 1.79.0, S7):
+  # registerAgentIdentityProvider, asChannelKey per bot, agent_own_bot, the
+  # proactive send's speaker and disposer, RoutineTurnInput.conductorBinding.
+  core: ">=1.79.0 <2.0"
   node: ">=20"
 
 depends_on: []
@@ -81,10 +81,11 @@ setup:
       DMs need no intent.
 
       ### Choosing an agent
-      This installation is **one** Discord bot. To talk to a specific agent, type
-      `/agent <name>` (or use the slash command) once; `/agents` lists the agents
-      you can choose; `/agent` alone clears your choice. One bot per agent is not
-      supported yet (see the README).
+      The bot in this setup is shared. To talk to a specific agent through it,
+      type `/agent <name>` (or use the slash command) once; `/agents` lists the
+      agents you can choose; `/agent` alone clears your choice. An agent can
+      also have a bot of its own: create one in the Developer Portal and paste
+      its token on the agent's page in omadia (Channels → Own bots, see the README).
 
       ### 4. Invite the bot to your server
       1. Left sidebar → **OAuth2** → **URL Generator**.
@@ -127,10 +128,12 @@ setup:
       Bot nur in DMs. DMs brauchen kein Intent.
 
       ### Agent wählen
-      Diese Installation ist **ein** Discord-Bot. Um mit einem bestimmten Agenten
-      zu sprechen, tippe einmal `/agent <Name>` (oder nutze den Slash-Command);
-      `/agents` listet die wählbaren Agenten; `/agent` allein hebt die Wahl auf.
-      Ein Bot pro Agent wird noch nicht unterstützt (siehe README).
+      Der Bot in diesem Setup ist gemeinsam. Um über ihn mit einem bestimmten
+      Agenten zu sprechen, tippe einmal `/agent <Name>` (oder nutze den
+      Slash-Command); `/agents` listet die wählbaren Agenten; `/agent` allein hebt
+      die Wahl auf. Ein Agent kann auch einen eigenen Bot haben: lege ihn im
+      Developer Portal an und trage seinen Token auf der Agent-Seite in omadia ein
+      (Kanäle → Eigene Bots, siehe README).
 
       ### 4. Bot auf deinen Server einladen
       1. Linke Leiste → **OAuth2** → **URL Generator**.
@@ -216,6 +219,10 @@ setup:
 # not route through ctx.http.
 # ---------------------------------------------------------------------------
 permissions:
+  # Spec 2042 §5.3 — agents' own bots: their tokens are stored per bot in
+  # this plugin's vault (`agent_bot_token_<appId>`). Gates ctx.secrets.set/delete.
+  secrets:
+    runtime_write: true
   memory:
     reads: []
     writes: []
@@ -256,6 +263,10 @@ requires:
   - "chatAgent@^1"
 optional_requires:
   - "channelResolver@1"
+  # Kernel-side, only with a database: each turn opens its routines scope
+  # (triggers, routines) and deliveries go out through the bot they were set
+  # on. Absent = agents set no triggers here.
+  - "routinesIntegration@1"
 provides: []
 
 # Generic admin-UI iframe surface (rendered by web-ui for any plugin that
