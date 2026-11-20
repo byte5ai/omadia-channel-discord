@@ -3,20 +3,19 @@ import { fileURLToPath } from 'node:url';
 
 import * as channelSdk from '@omadia/channel-sdk';
 import {
-  isNoReply,
-  logNoReplyDrop,
+  InMemorySpeakerHistoryStore,
   type ChatAgent,
   type ChannelHandle,
   type CoreApi,
-  type IncomingTurn,
-  type SemanticAnswer,
 } from '@omadia/channel-sdk';
 import type { PluginContext } from '@omadia/plugin-api';
 
 import { createAdminRouter } from './adminRouter.js';
+import { PendingChoices } from './choices.js';
 import { DiscordConnection, type GuildResponsePolicy } from './discordConnection.js';
-import { InteractionRegistry } from './interactions.js';
+import { DiscordRosterProvider } from './roster.js';
 import { createChannelState } from './state.js';
+import { runTurn, type AgentCommandLike, type TurnDeps } from './turn.js';
 
 /**
  * Channel-plugin entry. The kernel's dynamic channel resolver imports this
@@ -35,6 +34,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   const guildPolicy = parseGuildPolicy(ctx.config.get<string>('respond_in_guilds'));
   const allowDms = ctx.config.get<boolean>('allow_dms') ?? true;
   const messageContentIntent = ctx.config.get<boolean>('message_content_intent') ?? false;
+  const guildMembersIntent = ctx.config.get<boolean>('guild_members_intent') ?? false;
   const enableSlashCommand = ctx.config.get<boolean>('enable_slash_command') ?? true;
   const ignoreBots = ctx.config.get<boolean>('ignore_bots') ?? true;
   const allowlist = parseAllowlist(ctx.config.get<string>('allowlist') ?? '');
@@ -50,7 +50,13 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   }
 
   const state = createChannelState();
-  const registry = new InteractionRegistry();
+  const turnDeps: TurnDeps = {
+    services: ctx.services,
+    defaultAgent: agent,
+    choices: new PendingChoices(),
+    log: (level, message, context) => core.log(level, message, context),
+    ...optionalAgentCommandParser(),
+  };
 
   const conn = new DiscordConnection({
     channelId,
@@ -59,10 +65,22 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     state,
     policy: { guildPolicy, allowDms, ignoreBots, allowlist },
     messageContentIntent,
+    guildMembersIntent,
     enableSlashCommand,
-    registry,
-    runTurn: (turn) => runTurn(ctx, agent, turn),
+    speakerHistory: new InMemorySpeakerHistoryStore(),
+    runTurn: (turn) => runTurn(turnDeps, turn),
   });
+
+  // Who is in a conversation: the kernel's audience floor needs it to answer
+  // in a group (fail-closed without it). Feature-detected: older kernels
+  // have no roster registry.
+  core.registerRosterProvider?.(
+    channelId,
+    new DiscordRosterProvider({
+      describe: (conversationId) => conn.describeConversation(conversationId),
+      self: () => conn.self(),
+    }),
+  );
 
   // Status / invite admin UI. web-ui renders this as an iframe (manifest
   // `admin_ui_path`); the UI fetches its JSON API with RELATIVE paths so it
@@ -84,6 +102,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     allowDms,
     allowlisted: allowlist.size,
     slashCommand: enableSlashCommand,
+    guildMembersIntent,
   });
 
   return {
@@ -92,38 +111,6 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
       await conn.close();
     },
   };
-}
-
-/**
- * Drive one orchestrator turn. Returns the {@link SemanticAnswer} to render,
- * or null when the orchestrator emitted NO_REPLY (the connection then stays
- * silent for a passive message). Mirrors the WhatsApp channel's fold.
- */
-async function runTurn(
-  ctx: PluginContext,
-  defaultAgent: ChatAgent,
-  turn: IncomingTurn,
-): Promise<SemanticAnswer | null> {
-  const guildId = (turn.metadata as { guildId?: string | null } | undefined)?.guildId;
-  // US7 — route to the Agent bound to this Discord channel (per-channel), else
-  // the guild-level binding (guildId), else the platform fallback, else the
-  // default.
-  const agent = resolveAgentForTurn(
-    ctx,
-    'discord',
-    [turn.conversationId, guildId],
-    defaultAgent,
-  );
-  const answer = await agent.chat({
-    userMessage: turn.text,
-    sessionScope: `discord:${turn.conversationId}`,
-    userId: turn.userRef.id,
-  });
-  if (isNoReply(answer)) {
-    logNoReplyDrop(turn.channelId, { conversationId: turn.conversationId });
-    return null;
-  }
-  return answer;
 }
 
 /**
@@ -142,52 +129,14 @@ function resolveChatAgent(ctx: PluginContext): ChatAgent | undefined {
 }
 
 /**
- * Structural view of the kernel's `channelResolver@1` — the per-binding router
- * published by the multi-orchestrator runtime. Consumed directly (not via a
- * new SDK export) so this plugin keeps running on hosts whose
- * `@omadia/channel-sdk` predates the US7 helper; the service itself is what the
- * helper wraps.
+ * The SDK's `parseAgentCommand` (kernel #2055), when this host's SDK has it.
+ * Read off the namespace so a host that predates it just yields `undefined`
+ * instead of failing the module load.
  */
-interface ChannelBindingResolver {
-  resolve(
-    channelType: string,
-    channelKey: string,
-  ): { readonly decision: 'bound' | 'fallback' | 'reject'; readonly chatAgent?: ChatAgent };
-}
-
-const CHANNEL_RESOLVER_SERVICE = 'channelResolver';
-
-/**
- * US7 per-turn Agent resolution. Routes a turn to the Agent the operator bound
- * to its `(channelType, channelKey)` via `channelResolver@1`, falling back to
- * `defaultAgent` when no binding (and no platform fallback Agent) matches OR
- * the resolver is not published (single-Agent / pre-US7 host). `channelKeys`
- * are tried most-specific first: a `bound` decision wins immediately, a
- * `fallback` is remembered and used only if no key is explicitly bound.
- * Resolver errors are swallowed (default agent used) so a hiccup never drops a
- * turn. Without this, every turn reaches the shared, fully-tooled singleton
- * regardless of which Agent the channel is bound to.
- */
-function resolveAgentForTurn(
-  ctx: PluginContext,
-  channelType: string,
-  channelKeys: ReadonlyArray<string | null | undefined>,
-  defaultAgent: ChatAgent,
-): ChatAgent {
-  const resolver = ctx.services.get<ChannelBindingResolver>(CHANNEL_RESOLVER_SERVICE);
-  if (!resolver) return defaultAgent;
-  let fallback: ChatAgent | undefined;
-  try {
-    for (const key of channelKeys) {
-      if (!key) continue;
-      const decision = resolver.resolve(channelType, key);
-      if (decision.decision === 'bound' && decision.chatAgent) return decision.chatAgent;
-      if (decision.decision === 'fallback' && decision.chatAgent) fallback ??= decision.chatAgent;
-    }
-  } catch {
-    return defaultAgent;
-  }
-  return fallback ?? defaultAgent;
+function optionalAgentCommandParser(): Pick<TurnDeps, 'parseAgentCommand'> {
+  const parse = (channelSdk as { parseAgentCommand?: (text: string) => AgentCommandLike | undefined })
+    .parseAgentCommand;
+  return parse ? { parseAgentCommand: parse } : {};
 }
 
 /** Validate the guild-response policy enum, defaulting to 'mention'. */

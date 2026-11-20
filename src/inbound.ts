@@ -2,6 +2,8 @@ import { ChannelType, type Message } from 'discord.js';
 
 import type { IncomingTurn } from '@omadia/channel-sdk';
 
+import { DISCORD_CHANNEL_TYPE } from './renderer.js';
+
 /** A Discord message is a DM when it has no guild (1:1 with the bot). */
 export function isDirectMessage(msg: Message): boolean {
   return !msg.guild || msg.channel.type === ChannelType.DM;
@@ -35,6 +37,9 @@ export function buildIncomingTurn(channelId: string, msg: Message, text: string)
   return {
     channelId,
     conversationId: msg.channelId,
+    channelType: DISCORD_CHANNEL_TYPE,
+    channelKey: msg.channelId,
+    conversationType: dm ? 'direct' : 'group',
     userRef: {
       kind: 'discord-user',
       id: msg.author.id,
@@ -48,5 +53,44 @@ export function buildIncomingTurn(channelId: string, msg: Message, text: string)
       messageId: msg.id,
     },
     rawEvent: msg,
+  };
+}
+
+/** The slice of a Discord chat-input interaction a turn is built from. */
+export interface SlashInteractionLike {
+  channelId: string | null;
+  guildId: string | null;
+  locale?: string;
+  user: { id: string; globalName?: string | null; username: string };
+}
+
+/**
+ * Translate a slash command into the core `IncomingTurn` shape. `text` is what
+ * the command stands for as a message (`/ask` passes the question; `/agent`
+ * passes `/agent <name>` unchanged so the kernel's management layer reads it
+ * like typed text).
+ */
+export function buildSlashTurn(channelId: string, interaction: SlashInteractionLike, text: string): IncomingTurn {
+  const conversationId = interaction.channelId ?? `dm:${interaction.user.id}`;
+  const inGuild = interaction.guildId !== null;
+  return {
+    channelId,
+    conversationId,
+    channelType: DISCORD_CHANNEL_TYPE,
+    channelKey: conversationId,
+    conversationType: inGuild ? 'group' : 'direct',
+    userRef: {
+      kind: 'discord-user',
+      id: interaction.user.id,
+      displayName: interaction.user.globalName ?? interaction.user.username,
+    },
+    text,
+    metadata: {
+      via: 'slash',
+      isDm: !inGuild,
+      guildId: interaction.guildId,
+      discordChannelId: interaction.channelId,
+      ...(interaction.locale ? { locale: interaction.locale } : {}),
+    },
   };
 }
