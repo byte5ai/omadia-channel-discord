@@ -42,6 +42,9 @@ function sendDeps(posted: string[], label: string): SendProviderDeps {
       directChannel: async () => {
         throw new Error('no dm');
       },
+      addOwnReaction: async (route) => {
+        posted.push(`${label}:react ${route}`);
+      },
     },
     speakerHistory: new InMemorySpeakerHistoryStore(),
     log: () => undefined,
@@ -210,6 +213,20 @@ describe('fleet', () => {
     assert.deepEqual(posted, [`${MIRA_APP}:Hallo`, 'default:Standard']);
     const unknown = await send.sendToConversation(CHANNEL, { text: 'x' }, { asChannelKey: 'discord-app:999999999999999999' });
     assert.equal(unknown.outcome === 'unreachable' && unknown.code, 'not_permitted');
+  });
+
+  it('reacts through exactly the bot asChannelKey names, never another one (spec 2043 §5.14)', async () => {
+    const posted: string[] = [];
+    const r = rig(mira, posted);
+    await r.fleet.add(runtime(MIRA_APP, posted));
+    const send = createDiscordConversationSendProvider((key) => r.fleet.sendDepsFor(key));
+    const message = '444444444444444444';
+    const out = await send.react!(CHANNEL, message, 'acknowledge', { asChannelKey: `discord-app:${MIRA_APP}` });
+    assert.deepEqual(out, { outcome: 'reacted' });
+    assert.deepEqual(posted, [`${MIRA_APP}:react /channels/${CHANNEL}/messages/${message}/reactions/%F0%9F%91%8D/@me`]);
+    const unknown = await send.react!(CHANNEL, message, 'acknowledge', { asChannelKey: 'discord-app:999999999999999999' });
+    assert.equal(unknown.outcome === 'unreachable' && unknown.code, 'not_permitted');
+    assert.equal(posted.length, 1);
   });
 
   it('presentIn lists the agent bots that can see the channel', async () => {

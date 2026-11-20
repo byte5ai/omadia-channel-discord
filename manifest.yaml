@@ -217,6 +217,12 @@ setup:
 # stays empty. network.outbound is descriptive for the operator permissions
 # summary — discord.js opens its OWN Gateway WebSocket + REST calls, it does
 # not route through ctx.http.
+#
+# Discord-side bot permissions are not declared here but in the OAuth2 invite
+# URL the admin UI shows (View Channel, Send Messages, Embed Links, Read
+# Message History, Add Reactions). Reactions (spec 2043 §5.14) are a REST call
+# to discord.com (`PUT /channels/{id}/messages/{id}/reactions/{emoji}/@me`),
+# already covered by the outbound hosts below.
 # ---------------------------------------------------------------------------
 permissions:
   # Spec 2042 §5.3 — agents' own bots: their tokens are stored per bot in
