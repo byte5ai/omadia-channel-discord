@@ -71,6 +71,8 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     guildMembersIntent,
     enableSlashCommand,
     speakerHistory,
+    // Feature-detected: older kernels have no conversation-message registry.
+    ...(core.emitConversationMessage ? { emitConversationMessage: (event) => core.emitConversationMessage?.(event) } : {}),
     planTurn: (turn) => planTurn(turnDeps, turn),
   });
 

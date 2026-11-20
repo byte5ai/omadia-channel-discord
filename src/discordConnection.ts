@@ -10,7 +10,13 @@ import {
   type Message,
 } from 'discord.js';
 
-import type { IncomingTurn, LogLevel, PaceClock, SpeakerHistoryStore } from '@omadia/channel-sdk';
+import type {
+  ConversationMessageEvent,
+  IncomingTurn,
+  LogLevel,
+  PaceClock,
+  SpeakerHistoryStore,
+} from '@omadia/channel-sdk';
 
 import {
   deliverEphemeral,
@@ -27,6 +33,7 @@ import {
   isDirectMessage,
   mentionsBot,
 } from './inbound.js';
+import { buildCreatedEvent, discordBotChannelKey } from './conversationEvents.js';
 import { acknowledgeAs, MESSAGE_PACE, runPaced, SLASH_PACE } from './pace.js';
 import type { RosterMember, RosterSource } from './roster.js';
 import type { ProactiveChannel, SendPort } from './sendProviders.js';
@@ -68,6 +75,12 @@ export interface DiscordConnectionDeps {
   enableSlashCommand: boolean;
   /** Which agents spoke in which conversation (name-line decision, INV-4). */
   speakerHistory: SpeakerHistoryStore;
+  /**
+   * Tell the kernel about a received message (`core.emitConversationMessage`).
+   * Absent on a kernel without the conversation-message registry: nothing is
+   * emitted then. Fire-and-forget; the kernel drops what no subscription wants.
+   */
+  emitConversationMessage?: (event: ConversationMessageEvent) => void;
   /** Timer seam for the pace behaviour (tests). */
   paceClock?: PaceClock;
   /**
@@ -95,6 +108,7 @@ const NO_ANSWER_TEXT = 'Keine Antwort.';
 export class DiscordConnection {
   private readonly client: Client;
   private botUserId = '';
+  private botKey = '';
   private intentionalClose = false;
 
   constructor(private readonly deps: DiscordConnectionDeps) {
@@ -148,6 +162,7 @@ export class DiscordConnection {
 
   private onReady(client: Client<true>): void {
     this.botUserId = client.user.id;
+    this.botKey = discordBotChannelKey(client.application?.id ?? client.user.id);
     const inviteUrl = buildInviteUrl(client.user.id);
     patchState(this.deps.state, {
       status: 'connected',
@@ -201,18 +216,27 @@ export class DiscordConnection {
       } else {
         const policy = this.deps.policy.guildPolicy;
         if (policy === 'off') return;
-        if (policy === 'mention' && !mentionsBot(message, this.botUserId)) return;
       }
 
+      // Not allowlisted: no turn, and nothing is told to the kernel either.
       if (!this.isAllowlisted(message.author.id, message.guildId)) {
-        this.deps.log('info', 'discord message dropped (not allowlisted)', {
-          user: message.author.id,
-          guild: message.guildId,
-        });
+        if (dm || this.deps.policy.guildPolicy === 'all' || mentionsBot(message, this.botUserId)) {
+          this.deps.log('info', 'discord message dropped (not allowlisted)', {
+            user: message.author.id,
+            guild: message.guildId,
+          });
+        }
         return;
       }
 
       const text = extractText(message, this.botUserId);
+      // Before the mention gate: a typed reply to a question need not mention the bot.
+      this.emitCreated(message, text);
+
+      if (!dm) {
+        const policy = this.deps.policy.guildPolicy;
+        if (policy === 'mention' && !mentionsBot(message, this.botUserId)) return;
+      }
       if (!text) {
         // In guild 'all' mode without the privileged Message-Content intent the
         // body is redacted — make that visible rather than silently dropping.
@@ -255,6 +279,18 @@ export class DiscordConnection {
         systemAnswer(ERROR_TEXT),
         this.deliveryContext(message.channelId),
       ).catch(() => {});
+    }
+  }
+
+  /** Report a received message to the kernel; a failing report never disturbs the turn. */
+  private emitCreated(message: Message, text: string | undefined): void {
+    const emit = this.deps.emitConversationMessage;
+    if (!emit || !this.botKey) return;
+    try {
+      const event = buildCreatedEvent(this.deps.channelId, this.botKey, this.botUserId, message, text);
+      if (event) emit(event);
+    } catch (err) {
+      this.deps.log('warn', 'discord conversation event not emitted', { error: (err as Error).message });
     }
   }
 
