@@ -11,8 +11,8 @@ describe('package and manifest', () => {
     assert.equal(manifest, pkg.version);
   });
 
-  it('requires the kernel with agent channel identities (S7, placeholder floor)', () => {
-    assert.match(read('manifest.yaml'), /^\s+core: ">=1\.79\.0 <2\.0"/m);
+  it('requires the kernel with the reaction contract (plugin-api 1.82.0, channel-sdk 0.3.9)', () => {
+    assert.match(read('manifest.yaml'), /^\s+core: ">=1\.82\.0 <2\.0"/m);
   });
 
   it('declares no agent selection service: /agent, /agents are plain text for the resolver\'s ChatAgent', () => {
