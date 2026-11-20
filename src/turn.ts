@@ -18,6 +18,7 @@ import {
 import { choiceOptionsOf, type PendingChoices } from './choices.js';
 import { noticeAnswer, systemAnswer } from './delivery.js';
 import { DISCORD_CHANNEL_TYPE } from './renderer.js';
+import type { DiscordRoutineTurn } from './routines.js';
 
 /**
  * One orchestrator turn of this channel: per-turn agent resolution through the
@@ -55,6 +56,12 @@ export interface TurnDeps {
    * answers as another.
    */
   ownBotKey?: () => string | undefined;
+  /**
+   * Spec 2042 §5.12 — opens the kernel's routines scope for a person's turn,
+   * so the agent may set triggers and routines that deliver back here
+   * (through this bot). Absent = the kernel publishes no routines.
+   */
+  routineTurn?: DiscordRoutineTurn;
 }
 
 /** A turn whose agent is resolved but which has not run yet. */
@@ -205,12 +212,18 @@ export function planTurn(deps: TurnDeps, turn: IncomingTurn): PlannedTurn {
       const choiceKey = `${turn.conversationId}:${turn.userRef.id}`;
       const userMessage = deps.choices.resolve(choiceKey, turn.text);
       const sessionScope = `discord:${turn.conversationId}`;
-      const answer = await route.agent.chat({
-        userMessage,
-        sessionScope,
-        userId: turn.userRef.id,
-        origin: originOf(turn, sessionScope, principalOf(turn)),
-      });
+      const chat = (): Promise<SemanticAnswer> =>
+        route.agent.chat({
+          userMessage,
+          sessionScope,
+          userId: turn.userRef.id,
+          origin: originOf(turn, sessionScope, principalOf(turn)),
+        });
+      // The routines scope wraps the whole turn: who asks, and where a
+      // trigger or routine the agent sets now delivers later.
+      const answer = await (deps.routineTurn
+        ? deps.routineTurn({ userId: turn.userRef.id, conversationId: turn.conversationId })(chat)
+        : chat());
       if (isNoReply(answer)) {
         logNoReplyDrop(turn.channelId, { conversationId: turn.conversationId });
         return null;

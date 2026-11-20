@@ -10,7 +10,7 @@ import {
   type CoreApi,
   type LogLevel,
 } from '@omadia/channel-sdk';
-import type { PluginContext } from '@omadia/plugin-api';
+import type { PluginContext, RoutinesIntegration } from '@omadia/plugin-api';
 
 import { createAdminRouter } from './adminRouter.js';
 import { PendingChoices } from './choices.js';
@@ -30,6 +30,7 @@ import {
 } from './agentBots.js';
 import { discordBotChannelKey } from './conversationEvents.js';
 import { createChannelState } from './state.js';
+import { createDiscordProactiveSend, createDiscordRoutineTurn, ROUTINES_INTEGRATION_SERVICE } from './routines.js';
 import { planTurn, type TurnDeps } from './turn.js';
 
 /**
@@ -63,6 +64,10 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     );
   }
 
+  // Triggers and routines (spec 2042 §5.12): published by the kernel only
+  // with a database. Absent = agents cannot set triggers or routines here.
+  const routines = ctx.services.get<RoutinesIntegration>(ROUTINES_INTEGRATION_SERVICE);
+
   const state = createChannelState();
   const speakerHistory = new InMemorySpeakerHistoryStore();
   const log = (level: LogLevel, message: string, context?: Record<string, unknown>) => core.log(level, message, context);
@@ -86,6 +91,10 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
       choices: new PendingChoices(),
       log,
       ...(agentBot ? { ownBotKey: () => conn?.channelKey() } : {}),
+      // A trigger or routine the agent sets here delivers through this bot.
+      ...(routines
+        ? { routineTurn: createDiscordRoutineTurn(routines, channelId, () => (agentBot ? conn?.channelKey() : undefined)) }
+        : {}),
     };
     const botState = agentBot ? createChannelState() : state;
     conn = new DiscordConnection({
@@ -158,6 +167,12 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   const lookup = (asChannelKey: string | undefined) => fleet.sendDepsFor(asChannelKey);
   core.registerTargetedSendProvider?.(channelId, createDiscordTargetedSendProvider(lookup));
   core.registerConversationSendProvider?.(channelId, createDiscordConversationSendProvider(lookup));
+  // Trigger and routine deliveries go out through the bot the conversation
+  // came through: an agent's own bot, or the installation's.
+  if (routines) {
+    routines.publishProactiveSend(DISCORD_CHANNEL_TYPE, createDiscordProactiveSend(lookup));
+    log('info', 'discord proactive send registered (triggers and routines deliver through the bot they were set on)');
+  }
 
   // --- Agents' own bots (spec 2042 §5.3) --------------------------------
   // Needs the vault write permission (tokens are stored per bot) and a kernel

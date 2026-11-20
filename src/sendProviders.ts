@@ -115,7 +115,8 @@ function refuseRichMessage(message: TargetedMessage): Unreachable | undefined {
   return undefined;
 }
 
-function deliveryContext(deps: SendProviderDeps, conversationKey: string): DeliveryContext {
+/** How a send through `deps` renders (its speaker history, its name line rule). */
+export function sendDeliveryContext(deps: SendProviderDeps, conversationKey: string): DeliveryContext {
   return {
     conversationKey: `discord:${conversationKey}`,
     speakerHistory: deps.speakerHistory,
@@ -155,7 +156,7 @@ export function createDiscordTargetedSendProvider(lookup: DiscordBotLookup): Tar
       }
       try {
         const dm = await deps.port.directChannel(userId);
-        const post = await deliverProactive(dm, message, deliveryContext(deps, userId));
+        const post = await deliverProactive(dm, message, sendDeliveryContext(deps, userId));
         if (!post) return unreachable('channel_error', 'the message had no text to post');
         return { outcome: 'delivered', ...post };
       } catch (err) {
@@ -189,7 +190,7 @@ export function createDiscordConversationSendProvider(lookup: DiscordBotLookup):
         if (!deps.isAllowed(undefined, channel.guildId)) {
           return unreachable('not_permitted', 'this server is not on the channel\'s allowlist');
         }
-        const post = await deliverProactive(channel, message, deliveryContext(deps, conversationId));
+        const post = await deliverProactive(channel, message, sendDeliveryContext(deps, conversationId));
         if (!post) return unreachable('channel_error', 'the message had no text to post');
         return { outcome: 'delivered', ...post };
       } catch (err) {
