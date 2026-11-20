@@ -52,7 +52,9 @@ export function createDiscordRoutineTurn(
       conversationId,
       ...(key ? { asChannelKey: key } : {}),
     };
-    return routines.beginRoutineTurn({ userId, channel: DISCORD_CHANNEL_TYPE, conversationRef });
+    // Triggers and routines only: a guild channel or an agent's bot is not
+    // where the person's Conductor reminders go (`conductorBinding: false`).
+    return routines.beginRoutineTurn({ userId, channel: DISCORD_CHANNEL_TYPE, conversationRef, conductorBinding: false });
   };
 }
 

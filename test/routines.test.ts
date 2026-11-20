@@ -51,8 +51,8 @@ describe('routines scope per turn', () => {
     createDiscordRoutineTurn(routines as never, CHANNEL_ID, () => MIRA_KEY)({ userId: USER, conversationId: CHAN });
     createDiscordRoutineTurn(routines as never, CHANNEL_ID, () => undefined)({ userId: USER, conversationId: CHAN });
     assert.deepEqual(seen, [
-      { userId: USER, channel: 'discord', conversationRef: { kind: 'channel', channelId: CHANNEL_ID, conversationId: CHAN, asChannelKey: MIRA_KEY } },
-      { userId: USER, channel: 'discord', conversationRef: { kind: 'channel', channelId: CHANNEL_ID, conversationId: CHAN } },
+      { userId: USER, channel: 'discord', conductorBinding: false, conversationRef: { kind: 'channel', channelId: CHANNEL_ID, conversationId: CHAN, asChannelKey: MIRA_KEY } },
+      { userId: USER, channel: 'discord', conductorBinding: false, conversationRef: { kind: 'channel', channelId: CHANNEL_ID, conversationId: CHAN } },
     ]);
   });
 

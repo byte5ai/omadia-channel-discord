@@ -169,10 +169,9 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   core.registerConversationSendProvider?.(channelId, createDiscordConversationSendProvider(lookup));
   // Trigger and routine deliveries go out through the bot the conversation
   // came through: an agent's own bot, or the installation's.
-  if (routines) {
-    routines.publishProactiveSend(DISCORD_CHANNEL_TYPE, createDiscordProactiveSend(lookup));
-    log('info', 'discord proactive send registered (triggers and routines deliver through the bot they were set on)');
-  }
+  // Removed again on close, so nothing is delivered through a closed channel.
+  const disposeProactiveSend = routines?.publishProactiveSend(DISCORD_CHANNEL_TYPE, createDiscordProactiveSend(lookup));
+  if (routines) log('info', 'discord proactive send registered (triggers and routines deliver through the bot they were set on)');
 
   // --- Agents' own bots (spec 2042 §5.3) --------------------------------
   // Needs the vault write permission (tokens are stored per bot) and a kernel
@@ -226,6 +225,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
 
   return {
     async close() {
+      if (typeof disposeProactiveSend === 'function') disposeProactiveSend();
       disposeRoutes();
       await fleet.closeAll();
       await conn.close();
