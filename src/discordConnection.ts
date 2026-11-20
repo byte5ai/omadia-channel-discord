@@ -81,6 +81,15 @@ export interface DiscordConnectionDeps {
    * emitted then. Fire-and-forget; the kernel drops what no subscription wants.
    */
   emitConversationMessage?: (event: ConversationMessageEvent) => void;
+  /**
+   * Like `emitConversationMessage`, but the kernel says whether it consumed the
+   * message as the typed answer to an open question (`core.reportConversationMessage`).
+   * Used for a message that would start a turn: a consumed answer starts none.
+   * Absent: the message is emitted and the turn runs, as before.
+   */
+  reportConversationMessage?: (event: ConversationMessageEvent) => Promise<{ answeredCard: boolean }>;
+  /** How long a turn waits for that report before it runs anyway. Default 1.5 s. */
+  reportTimeoutMs?: number;
   /** Timer seam for the pace behaviour (tests). */
   paceClock?: PaceClock;
   /**
@@ -93,6 +102,9 @@ export interface DiscordConnectionDeps {
    */
   planTurn: (turn: IncomingTurn) => PlannedTurn;
 }
+
+/** A slow report never delays a turn longer than this; the answer is then unknown, i.e. no answer. */
+const REPORT_TIMEOUT_MS = 1_500;
 
 const ERROR_TEXT = 'Entschuldigung, dabei ist ein Fehler aufgetreten. Bitte versuche es erneut.';
 const NOT_ALLOWED_TEXT = 'Du darfst diesen Bot hier nicht verwenden.';
@@ -231,12 +243,18 @@ export class DiscordConnection {
 
       const text = extractText(message, this.botUserId);
       // Before the mention gate: a typed reply to a question need not mention the bot.
-      this.emitCreated(message, text);
-
-      if (!dm) {
-        const policy = this.deps.policy.guildPolicy;
-        if (policy === 'mention' && !mentionsBot(message, this.botUserId)) return;
+      const startsTurn = dm || this.deps.policy.guildPolicy === 'all' || mentionsBot(message, this.botUserId);
+      const isAnswer = await this.reportCreated(message, text, startsTurn);
+      if (isAnswer) {
+        // The kernel took it as the typed answer to an open question: no turn,
+        // no acknowledgement, no reply from the agent.
+        this.deps.log('info', 'discord message was the answer to an open question', {
+          channel: message.channelId,
+          user: message.author.id,
+        });
+        return;
       }
+      if (!startsTurn) return;
       if (!text) {
         // In guild 'all' mode without the privileged Message-Content intent the
         // body is redacted — make that visible rather than silently dropping.
@@ -282,15 +300,53 @@ export class DiscordConnection {
     }
   }
 
-  /** Report a received message to the kernel; a failing report never disturbs the turn. */
-  private emitCreated(message: Message, text: string | undefined): void {
-    const emit = this.deps.emitConversationMessage;
-    if (!emit || !this.botKey) return;
+  /**
+   * Tell the kernel about a received message. Returns true when the kernel
+   * consumed it as the typed answer to an open question (only asked for a
+   * message that would start a turn). Never throws and never holds the turn
+   * longer than the report timeout.
+   */
+  private async reportCreated(message: Message, text: string | undefined, startsTurn: boolean): Promise<boolean> {
+    const { reportConversationMessage: report, emitConversationMessage: emit } = this.deps;
+    if ((!report && !emit) || !this.botKey) return false;
+    let event: ConversationMessageEvent | undefined;
     try {
-      const event = buildCreatedEvent(this.deps.channelId, this.botKey, this.botUserId, message, text);
-      if (event) emit(event);
+      event = buildCreatedEvent(this.deps.channelId, this.botKey, this.botUserId, message, text);
+    } catch (err) {
+      this.deps.log('warn', 'discord conversation event not built', { error: (err as Error).message });
+      return false;
+    }
+    if (!event) return false;
+    if (startsTurn && report) return this.awaitReport(() => report(event), message.channelId);
+    try {
+      emit?.(event);
     } catch (err) {
       this.deps.log('warn', 'discord conversation event not emitted', { error: (err as Error).message });
+    }
+    return false;
+  }
+
+  /** The report's verdict, or false when it fails or takes longer than the timeout. */
+  private async awaitReport(report: () => Promise<{ answeredCard: boolean }>, channelId: string): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), this.deps.reportTimeoutMs ?? REPORT_TIMEOUT_MS);
+    });
+    try {
+      const verdict = await Promise.race([Promise.resolve().then(report), timedOut]);
+      if (verdict === 'timeout') {
+        this.deps.log('warn', 'discord conversation report timed out; the turn runs', { channel: channelId });
+        return false;
+      }
+      return verdict.answeredCard === true;
+    } catch (err) {
+      this.deps.log('warn', 'discord conversation report failed; the turn runs', {
+        error: (err as Error).message,
+        channel: channelId,
+      });
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

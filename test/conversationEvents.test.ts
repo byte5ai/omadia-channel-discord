@@ -154,3 +154,79 @@ describe('emission by the connection', () => {
     assert.equal(turns, 1);
   });
 });
+
+describe('a typed answer to an open question starts no turn', () => {
+  type Report = (e: ConversationMessageEvent) => Promise<{ answeredCard: boolean }>;
+
+  function run(report: Report | undefined, over: Partial<DiscordConnectionDeps> = {}, message = stubMessage({ mentionsBot: true })) {
+    const counts = { turns: 0, acks: 0, reports: 0, emits: 0, logs: [] as string[] };
+    const conn = new DiscordConnection({
+      channelId: 'de.byte5.channel.discord',
+      token: 'x',
+      log: (_l, m) => void counts.logs.push(m),
+      state: { status: 'connecting' } as never,
+      policy: { guildPolicy: 'mention', allowDms: true, ignoreBots: true, allowlist: new Set() },
+      messageContentIntent: false,
+      guildMembersIntent: false,
+      enableSlashCommand: false,
+      speakerHistory: new InMemorySpeakerHistoryStore(),
+      planTurn: () => ({ speaker: MIRA, run: async () => (counts.turns += 1, { text: 'ok', speaker: MIRA }) }),
+      emitConversationMessage: () => void (counts.emits += 1),
+      ...(report ? { reportConversationMessage: (e: ConversationMessageEvent) => (counts.reports += 1, report(e)) } : {}),
+      ...over,
+    });
+    Object.assign(conn as unknown as Record<string, unknown>, { botUserId: BOT, botKey: discordBotChannelKey(BOT) });
+    const done = (conn as unknown as { onMessageCreate(m: Message): Promise<void> }).onMessageCreate(message);
+    return { counts, done };
+  }
+
+  it('a consumed answer starts no turn: no acknowledgement, no reply from the agent', async () => {
+    let replies = 0;
+    const message = stubMessage({ mentionsBot: true });
+    (message as unknown as { reply: () => Promise<void> }).reply = async () => void (replies += 1);
+    const { counts, done } = run(async () => ({ answeredCard: true }), {}, message);
+    await done;
+    assert.equal(counts.reports, 1);
+    assert.equal(counts.turns, 0);
+    assert.equal(replies, 0);
+  });
+
+  it('an answer that was not consumed runs the turn as usual', async () => {
+    const { counts, done } = run(async () => ({ answeredCard: false }));
+    await done;
+    assert.equal(counts.turns, 1);
+    assert.equal(counts.emits, 0, 'reported once, not emitted a second time');
+  });
+
+  it('a report that takes too long does not delay the turn: it runs after the timeout', async () => {
+    const { counts, done } = run(() => new Promise(() => undefined), { reportTimeoutMs: 20 });
+    await done;
+    assert.equal(counts.turns, 1);
+    assert.ok(counts.logs.some((m) => /timed out/.test(m)));
+  });
+
+  it('a failing report runs the turn and is logged, never thrown', async () => {
+    const { counts, done } = run(async () => { throw new Error('hub down'); });
+    await done;
+    assert.equal(counts.turns, 1);
+    assert.ok(counts.logs.some((m) => /report failed/.test(m)));
+    const sync = run(() => { throw new Error('sync'); });
+    await sync.done;
+    assert.equal(sync.counts.turns, 1);
+  });
+
+  it('without reportConversationMessage the message is emitted and the turn runs, as before', async () => {
+    const { counts, done } = run(undefined);
+    await done;
+    assert.equal(counts.emits, 1);
+    assert.equal(counts.turns, 1);
+  });
+
+  it('a message that starts no turn is only emitted, never held back for a verdict', async () => {
+    const { counts, done } = run(async () => ({ answeredCard: true }), {}, stubMessage({ repliesToMessage: 'msg-1' }));
+    await done;
+    assert.equal(counts.reports, 0);
+    assert.equal(counts.emits, 1);
+    assert.equal(counts.turns, 0);
+  });
+});

@@ -73,6 +73,9 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     speakerHistory,
     // Feature-detected: older kernels have no conversation-message registry.
     ...(core.emitConversationMessage ? { emitConversationMessage: (event) => core.emitConversationMessage?.(event) } : {}),
+    ...(core.reportConversationMessage
+      ? { reportConversationMessage: (event) => core.reportConversationMessage?.(event) ?? Promise.resolve({ answeredCard: false }) }
+      : {}),
     planTurn: (turn) => planTurn(turnDeps, turn),
   });
 

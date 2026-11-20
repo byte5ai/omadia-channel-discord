@@ -69,6 +69,12 @@ setting); do not publish before that kernel runs.
   person off the allowlist or in a server the bot is switched off in. The
   kernel stores them only for a subscription and turns a typed reply to a
   numbered question into the `card_answer` (kernel #2086).
+- A message that would start a turn is reported with
+  `core.reportConversationMessage` and awaited before the turn: when the kernel
+  consumed it as the typed answer to an open question (`answeredCard`), no turn
+  starts (no acknowledgement, no agent reply). The wait is capped at 1.5 s; a
+  timeout or error is logged and the turn runs as before. Without the method
+  the message is emitted and the turn runs, as before.
 - Group channels: the turn states `conversationType` (`direct` / `group`) and
   the sender in its origin, and the plugin registers a conversation roster
   provider (DM complete; server channel complete with the new
