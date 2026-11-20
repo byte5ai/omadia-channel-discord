@@ -22,7 +22,29 @@ omadia ist ein selbst-hostbares agentisches OS: stelle Multi-Agent-Teams aus sig
 
 ## Was es kann
 
-Verbindet einen Discord-Bot (über das discord.js-Gateway) mit omadia. Es nimmt Direktnachrichten, `@mentions` in Servern und einen `/ask`-Slash-Befehl auf, leitet jede davon an den omadia-Orchestrator weiter und gibt die Antwort im selben Thread zurück.
+Verbindet einen Discord-Bot (über das discord.js-Gateway) mit omadia. Es nimmt Direktnachrichten, `@mentions` in Servern und die Slash-Befehle `/ask`, `/agent` und `/agents` auf, leitet jede davon an den omadia-Agenten weiter, der die Unterhaltung bedient, und gibt die Antwort im selben Thread zurück.
+
+Antworten lesen sich wie die Nachricht einer Kollegin: reiner Text, keine Statuszeile, keine Buttons und keine Reaktion auf deine Nachricht. Während ein Agent arbeitet, zeigt der Bot „schreibt …"; dauert die Arbeit deutlich länger, sagt er das einmal, und ein langsamer Slash-Befehl wird als normale Nachricht beantwortet, statt zu scheitern.
+
+## Einen Agenten erreichen
+
+**Eine Installation ist ein Discord-Bot** (eine Discord-Application, ein Token). Alle deine Agenten erreichst du über diesen Bot. Die Auswahl ist ausdrücklich:
+
+| Du tippst | Was passiert |
+| --- | --- |
+| `/agent Mira` (oder der Slash-Befehl) | Mira wird dein Agent in dieser Unterhaltung. omadia bestätigt das einmal mit einer Systemnachricht. Wählbar sind nur Agenten, die dir in Discord zur Verfügung stehen. |
+| `/agents` | Listet die Agenten, die du hier wählen kannst. |
+| `/agent` | Hebt deine Wahl auf; es gilt wieder die Zuordnung des Kanals bzw. der Standard. |
+
+omadia speichert die Wahl pro Person und Unterhaltung, sie übersteht also einen Neustart, und zwei Personen im selben Kanal können mit verschiedenen Agenten sprechen. Die Befehle führt der omadia-Kernel aus; das Plugin reicht nur den Text weiter.
+
+**Ein Bot pro Agent (eigener Name und Avatar in Discord) wird noch nicht unterstützt.** Discord hat keine API zum Anlegen von Bots; jeder Agent würde dich also eine eigene Application im Developer Portal, ein eigenes Token, eine eigene Einladung auf jeden Server sowie eine eigene Gateway-Verbindung samt Intent-Einstellungen kosten, und dieses Plugin nimmt genau ein Token und kennt keinen Zuordnungsschlüssel pro Bot. Wer es heute braucht, nutzt die Wahl per `/agent`. Sprechen mehrere Agenten in einer Unterhaltung, setzt der Bot eine kurze Namenszeile („Paul: …") vor eine Antwort, wo der Sprecher sonst unklar wäre, nie vor jede Nachricht einer Ein-Agenten-Unterhaltung; der Beitrag einer Kollegin erscheint als „Paul: …" im Text.
+
+Ist einem Kanal kein Agent zugeordnet, ist der Agent deaktiviert oder für dich nicht verfügbar, antwortet der Bot mit einer Systemnachricht, die das sagt, nie mit einem anderen Agenten.
+
+## Server-Kanäle (Gruppen)
+
+omadia antwortet in einer Gruppe nur, wenn es weiß, wer im Kanal ist. Discord liefert die Mitgliederliste nur an Bots mit dem privilegierten **Server-Members-Intent**: im Developer Portal aktivieren (Bot, Privileged Gateway Intents) und in den Plugin-Einstellungen *Server-Mitglieder-Intent anfordern* anhaken. Ohne ihn ist die Teilnehmerliste eines Server-Kanals „unbekannt", und der Bot antwortet nur in Direktnachrichten. Direktnachrichten brauchen kein Intent. Server mit mehr als 5.000 Mitgliedern gelten als teilweise bekannt, omadia behandelt sie also ebenfalls als unbekannt.
 
 ## So funktioniert es in omadia
 
@@ -42,7 +64,8 @@ Ein Channel-Plugin (`kind: channel`). Der omadia-Kernel aktiviert es aus der `ma
 | Guild behaviour | enum | Wie der Bot in Servern reagiert. |
 | Allow DMs | boolean | |
 | Request message-content intent | boolean | Nötig, um Nachrichtentext in Servern zu lesen. |
-| Register /ask slash command | boolean | |
+| Request server-members intent | boolean | Nötig, damit omadia weiß, wer in einem Server-Kanal ist, und dort antwortet. |
+| Register slash commands | boolean | `/ask`, `/agent`, `/agents`. |
 | Ignore other bots | boolean | |
 | Allowed IDs | string | Optionale Allowlist. |
 
@@ -50,11 +73,12 @@ Ein Channel-Plugin (`kind: channel`). Der omadia-Kernel aktiviert es aus der `ma
 
 ```bash
 npm install
-npm run build   # tsc, schreibt dist/
-npm test        # prüft manifest.yaml gegen die Core-Invarianten
+npm run build   # esbuild-Bundle nach dist/ und Upload-Zip in out/
+npm run typecheck
+npm test        # node --test; braucht einen gebauten omadia-Checkout, siehe unten
 ```
 
-`@omadia/plugin-api` stellt der omadia-Host zur Laufzeit bereit (optionale Peer-Dep). Verlinke es aus einem lokalen omadia-Checkout zum Bauen. Aufbau siehe [byte5ai/omadia](https://github.com/byte5ai/omadia).
+`@omadia/plugin-api` und `@omadia/channel-sdk` stellt der omadia-Host zur Laufzeit bereit (optionale Peer-Deps). Für den Typecheck zeigen die `paths` der tsconfig auf einen gebauten omadia-Checkout. Die Tests lösen beide Pakete über `OMADIA_REPO` auf (Wurzel des Checkouts, Standard `../`; vorher `middleware/packages/harness-channel-sdk` und `plugin-api` bauen). Aufbau siehe [byte5ai/omadia](https://github.com/byte5ai/omadia).
 
 ## Lizenz
 
