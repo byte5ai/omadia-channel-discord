@@ -1,9 +1,13 @@
 import {
+  CHANNEL_RESOLVER_SERVICE,
+  channelUserPrincipal,
   isNoReply,
   logNoReplyDrop,
-  makePrincipal,
-  formatPrincipal,
+  parsePrincipal,
   parseSessionScope,
+  type AgentSpeaker,
+  type ChannelBindingResolver,
+  type ChannelResolveResult,
   type ChatAgent,
   type IncomingTurn,
   type LogLevel,
@@ -17,68 +21,47 @@ import { noticeAnswer, systemAnswer } from './delivery.js';
 import { DISCORD_CHANNEL_TYPE } from './renderer.js';
 
 /**
- * One orchestrator turn of this channel: agent selection commands, the choice
- * replies of numbered questions, per-turn agent resolution through the
- * kernel's `channelResolver@1`, and the chat call itself.
+ * One orchestrator turn of this channel: per-turn agent resolution through the
+ * kernel's `channelResolver@1`, the choice replies of numbered questions, and
+ * the chat call itself.
  *
- * The kernel decides which agent answers (INV-1): this module only passes on
- * who asks and where. When nothing answers it says so with a `system` notice
- * (INV-7); it never substitutes another agent.
+ * The kernel decides which agent answers (INV-1) and carries out `/agent
+ * <name>`, `/agent` and `/agents` itself, in the ChatAgent the resolver
+ * returns. This module only passes on who asks (one principal form, from the
+ * SDK), where, and the text, unchanged. It never parses a command and never
+ * substitutes another agent when the kernel refuses (INV-7).
  */
-
-/** Service name the kernel publishes its agent-selection service under (`@omadia/channel-sdk` `AGENT_SELECTION_SERVICE`). */
-export const AGENT_SELECTION_SERVICE_NAME = 'agentSelection';
-export const CHANNEL_RESOLVER_SERVICE_NAME = 'channelResolver';
-
-/**
- * Structural views of the kernel services, consumed without new SDK imports so
- * the plugin keeps loading on a host whose `@omadia/channel-sdk` predates them.
- */
-export interface AgentCommandLike {
-  readonly kind: 'select' | 'clear' | 'list';
-}
-
-export interface AgentSelectionServiceLike {
-  handle(
-    command: AgentCommandLike,
-    context: {
-      readonly channelType: string;
-      readonly conversationKey: string;
-      readonly principal: string;
-      readonly locale?: string;
-    },
-  ): Promise<SystemNotice>;
-}
-
-interface ChannelResolverLike {
-  resolve(
-    channelType: string,
-    channelKey: string,
-    context?: { readonly principal?: string; readonly locale?: string },
-  ): {
-    readonly decision: 'bound' | 'fallback' | 'reject';
-    readonly chatAgent?: ChatAgent;
-    readonly notice?: SystemNotice;
-  };
-}
 
 export interface TurnDeps {
   services: { get<T>(name: string): T | undefined };
   /** The agent of a host without a channel resolver (single-agent / pre-US7). */
   defaultAgent: ChatAgent;
   choices: PendingChoices;
-  /** The SDK's `parseAgentCommand`, when the host's SDK has it. */
-  parseAgentCommand?: (text: string) => AgentCommandLike | undefined;
   log: (level: LogLevel, message: string, context?: Record<string, unknown>) => void;
+}
+
+/** A turn whose agent is resolved but which has not run yet. */
+export interface PlannedTurn {
+  /**
+   * The agent that will answer, known before the answer (name, avatar). The
+   * connection acknowledges long work under this speaker. Absent when nobody
+   * is known to answer: no agent's words are made up for it then.
+   */
+  readonly speaker?: AgentSpeaker;
+  /**
+   * Run the turn. Resolves to the answer to render, or null when the agent
+   * emitted NO_REPLY (the connection then stays silent for a passive message).
+   */
+  run(): Promise<SemanticAnswer | null>;
 }
 
 const NO_AGENT_TEXT = 'Diesem Kanal ist kein Agent zugeordnet.';
 const ROUTING_FAILED_TEXT = 'Der zuständige Agent ist gerade nicht erreichbar. Bitte versuche es später erneut.';
+const REJECT_ANSWER_TEXT = 'Hier antwortet gerade kein Agent. Mit /agents siehst du, wen du wählen kannst.';
 
-/** The sender as a principal, `user:discord-user:<id>` (the platform id the kernel's `resolveIdentity` builds). */
-export function principalOf(turn: IncomingTurn): string | undefined {
-  const principal = makePrincipal('user', `${turn.userRef.kind}:${turn.userRef.id}`);
-  return principal ? formatPrincipal(principal) : undefined;
+/** The sender as a principal, the one form for every channel (`user:discord-user:<snowflake>`). */
+export function principalOf(turn: IncomingTurn): string {
+  return channelUserPrincipal(turn.userRef);
 }
 
 function localeOf(turn: IncomingTurn): string | undefined {
@@ -93,13 +76,13 @@ function localeOf(turn: IncomingTurn): string | undefined {
  * floor, the sender, the platform ids). Discord is not a context-memory channel
  * (`CONTEXT_MEMORY_CHANNEL_TYPES`), so the memory axes stay as before.
  */
-function originOf(turn: IncomingTurn, sessionScope: string): TurnOrigin {
-  const principal = makePrincipal('user', `${turn.userRef.kind}:${turn.userRef.id}`);
+function originOf(turn: IncomingTurn, sessionScope: string, principal: string): TurnOrigin {
+  const typedPrincipal = parsePrincipal(principal);
   const messageId = (turn.metadata as { messageId?: unknown } | undefined)?.messageId;
   return {
     channelType: DISCORD_CHANNEL_TYPE,
     scope: parseSessionScope(sessionScope),
-    ...(principal ? { principal } : {}),
+    ...(typedPrincipal ? { principal: typedPrincipal } : {}),
     ...(turn.conversationType ? { conversationType: turn.conversationType } : {}),
     channelConversationId: turn.conversationId,
     ...(typeof messageId === 'string' ? { messageId } : {}),
@@ -111,98 +94,107 @@ function originOf(turn: IncomingTurn, sessionScope: string): TurnOrigin {
   };
 }
 
+/** What the resolver decided for a turn. */
 type Route =
-  | { readonly kind: 'agent'; readonly agent: ChatAgent }
+  /** The agent that will answer (bound), or the resolver's ChatAgent that answers a reject with its notice. */
+  | { readonly kind: 'agent'; readonly agent: ChatAgent; readonly isRejected: boolean; readonly speaker?: AgentSpeaker; readonly notice?: SystemNotice }
+  /** Nobody can take the text: a `system` answer, no agent involved. */
   | { readonly kind: 'notice'; readonly answer: SemanticAnswer };
 
 /**
  * Resolve the agent for a turn. `channelKeys` are tried most specific first
- * (conversation, then guild): a `bound` decision wins at once. A `reject` is a
- * refusal with the kernel's `system` notice, never a silent fallback to the
- * default agent. Hosts without a resolver use the default agent.
+ * (conversation, then guild): a `bound` decision wins at once. When none
+ * binds, the FIRST key's reject stands, so `/agent` stores the selection for
+ * the conversation, and its ChatAgent answers with the kernel's `system`
+ * notice. Hosts without a resolver use the default agent.
  */
 export function resolveRoute(
   deps: TurnDeps,
   turn: IncomingTurn,
   channelKeys: ReadonlyArray<string | null | undefined>,
 ): Route {
-  const resolver = deps.services.get<ChannelResolverLike>(CHANNEL_RESOLVER_SERVICE_NAME);
-  if (!resolver) return { kind: 'agent', agent: deps.defaultAgent };
-  const principal = principalOf(turn);
+  const resolver = deps.services.get<ChannelBindingResolver>(CHANNEL_RESOLVER_SERVICE);
+  if (!resolver) return { kind: 'agent', agent: deps.defaultAgent, isRejected: false };
   const locale = localeOf(turn);
-  const context = { ...(principal ? { principal } : {}), ...(locale ? { locale } : {}) };
+  const context = { principal: principalOf(turn), ...(locale ? { locale } : {}) };
 
-  let legacyFallback: ChatAgent | undefined;
-  let rejection: SystemNotice | 'no_notice' | undefined;
+  let firstReject: ChannelResolveResult | undefined;
   try {
     for (const key of channelKeys) {
       if (!key) continue;
-      const decision = resolver.resolve(DISCORD_CHANNEL_TYPE, key, context);
-      if (decision.decision === 'bound' && decision.chatAgent) return { kind: 'agent', agent: decision.chatAgent };
-      // Hosts before #2055 still answer `fallback`: a platform default Agent.
-      if (decision.decision === 'fallback' && decision.chatAgent) legacyFallback ??= decision.chatAgent;
-      if (decision.decision === 'reject') rejection ??= decision.notice ?? 'no_notice';
+      const result = resolver.resolve(DISCORD_CHANNEL_TYPE, key, context);
+      if (result.decision === 'bound') {
+        if (!result.chatAgent) throw new Error('resolver answered bound without a chatAgent');
+        return {
+          kind: 'agent',
+          agent: result.chatAgent,
+          isRejected: false,
+          ...(result.speaker ? { speaker: result.speaker } : {}),
+        };
+      }
+      firstReject ??= result;
     }
   } catch (err) {
     deps.log('error', 'discord agent resolution failed', { error: (err as Error).message });
     return { kind: 'notice', answer: systemAnswer(ROUTING_FAILED_TEXT) };
   }
-  if (legacyFallback) return { kind: 'agent', agent: legacyFallback };
-  if (rejection) {
+  if (!firstReject) return { kind: 'agent', agent: deps.defaultAgent, isRejected: false };
+  // `chatAgent` is set on a reject too: it answers with the notice and carries
+  // out `/agent`, so a user can still choose an agent. Without it (a platform
+  // before the contract) the channel says why itself.
+  if (firstReject.chatAgent) {
     return {
-      kind: 'notice',
-      answer: rejection === 'no_notice' ? systemAnswer(NO_AGENT_TEXT) : noticeAnswer(rejection),
+      kind: 'agent',
+      agent: firstReject.chatAgent,
+      isRejected: true,
+      ...(firstReject.notice ? { notice: firstReject.notice } : {}),
     };
   }
-  return { kind: 'agent', agent: deps.defaultAgent };
+  return {
+    kind: 'notice',
+    answer: firstReject.notice ? noticeAnswer(firstReject.notice) : systemAnswer(NO_AGENT_TEXT),
+  };
 }
 
 /**
- * `/agent <name>`, `/agent`, `/agents`: carried out by the kernel's
- * management layer, parsed with the SDK's own parser. Without the kernel
- * service (an older host) the text is not a command here and flows on as an
- * ordinary message.
+ * The answer of a rejected route is always a `system` message (INV-7): the
+ * resolver's ChatAgent speaks as `system` for it, and anything else it
+ * returns is replaced by the notice, never shown as an agent's answer.
  */
-async function handleAgentCommand(deps: TurnDeps, turn: IncomingTurn): Promise<SemanticAnswer | undefined> {
-  const service = deps.services.get<AgentSelectionServiceLike>(AGENT_SELECTION_SERVICE_NAME);
-  const command = deps.parseAgentCommand?.(turn.text);
-  const principal = principalOf(turn);
-  if (!service || !command || !principal) return undefined;
-  const locale = localeOf(turn);
-  const notice = await service.handle(command, {
-    channelType: DISCORD_CHANNEL_TYPE,
-    conversationKey: turn.conversationId,
-    principal,
-    ...(locale ? { locale } : {}),
-  });
-  return noticeAnswer(notice);
+function rejectedAnswer(answer: SemanticAnswer, notice: SystemNotice | undefined, deps: TurnDeps): SemanticAnswer {
+  if (answer.speaker?.kind === 'system') return answer;
+  deps.log('error', 'discord reject answered under a non-system speaker; replaced by the notice');
+  return notice ? noticeAnswer(notice) : systemAnswer(REJECT_ANSWER_TEXT);
 }
 
 /**
- * Drive one turn. Returns the answer to render, or null when the agent
- * emitted NO_REPLY (the connection then stays silent for a passive message).
+ * Resolve the agent of a turn now and return what runs it. The agent is known
+ * before it answers, so the connection can acknowledge long work in its name.
  */
-export async function runTurn(deps: TurnDeps, turn: IncomingTurn): Promise<SemanticAnswer | null> {
-  const command = await handleAgentCommand(deps, turn);
-  if (command) return command;
-
+export function planTurn(deps: TurnDeps, turn: IncomingTurn): PlannedTurn {
   const guildId = (turn.metadata as { guildId?: string | null } | undefined)?.guildId;
   const route = resolveRoute(deps, turn, [turn.conversationId, guildId]);
-  if (route.kind === 'notice') return route.answer;
+  if (route.kind === 'notice') return { run: async () => route.answer };
 
-  const choiceKey = `${turn.conversationId}:${turn.userRef.id}`;
-  const userMessage = deps.choices.resolve(choiceKey, turn.text);
-  const sessionScope = `discord:${turn.conversationId}`;
-  const answer = await route.agent.chat({
-    userMessage,
-    sessionScope,
-    userId: turn.userRef.id,
-    origin: originOf(turn, sessionScope),
-  });
-  if (isNoReply(answer)) {
-    logNoReplyDrop(turn.channelId, { conversationId: turn.conversationId });
-    return null;
-  }
-  deps.choices.remember(choiceKey, choiceOptionsOf(answer));
-  return answer;
+  return {
+    ...(route.speaker ? { speaker: route.speaker } : {}),
+    run: async () => {
+      const choiceKey = `${turn.conversationId}:${turn.userRef.id}`;
+      const userMessage = deps.choices.resolve(choiceKey, turn.text);
+      const sessionScope = `discord:${turn.conversationId}`;
+      const answer = await route.agent.chat({
+        userMessage,
+        sessionScope,
+        userId: turn.userRef.id,
+        origin: originOf(turn, sessionScope, principalOf(turn)),
+      });
+      if (isNoReply(answer)) {
+        logNoReplyDrop(turn.channelId, { conversationId: turn.conversationId });
+        return null;
+      }
+      if (route.isRejected) return rejectedAnswer(answer, route.notice, deps);
+      deps.choices.remember(choiceKey, choiceOptionsOf(answer));
+      return answer;
+    },
+  };
 }

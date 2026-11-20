@@ -1,8 +1,12 @@
 import {
   runPacedTurn,
+  type AgentSpeaker,
   type ChannelPaceProfile,
   type PaceClock,
+  type SemanticAnswer,
 } from '@omadia/channel-sdk';
+
+import { agentAcknowledgement } from './delivery.js';
 
 /**
  * Pace of a Discord turn (spec 2042 §5.8, criterion 10): the typing
@@ -39,6 +43,21 @@ export interface PaceTarget {
   typing?: () => Promise<void> | void;
   /** Post the one acknowledgement. */
   acknowledge: (text: string) => Promise<void>;
+}
+
+/**
+ * The acknowledgement hook for a turn whose agent is `speaker`: the pace text
+ * is that agent's words, posted under its name (spec 2042 §5.8), never as
+ * `system`. Without a known speaker nothing is posted: no agent's words are
+ * made up for nobody, and the typing indicator still shows the work.
+ */
+export function acknowledgeAs(
+  speaker: AgentSpeaker | undefined,
+  post: (answer: SemanticAnswer) => Promise<unknown>,
+): PaceTarget['acknowledge'] {
+  return async (text) => {
+    if (speaker) await post(agentAcknowledgement(text, speaker));
+  };
 }
 
 export interface PacedRun<T> {

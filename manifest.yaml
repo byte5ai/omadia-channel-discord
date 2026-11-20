@@ -245,14 +245,14 @@ permissions:
 # default chatAgent). A `requires:` entry would be permanently unresolved and
 # drop the channel from the eligible set; `optional_requires:` grants the same
 # declaration the service gate asks for without a resolver edge.
+#
+# There is no agent-selection service to declare: `/agent <name>`, `/agent`
+# and `/agents` reach the ChatAgent the resolver returns as plain text, and
+# that agent carries them out (spec 2042 §5.3, criterion 30).
 requires:
   - "chatAgent@^1"
 optional_requires:
   - "channelResolver@1"
-  # byte5ai/omadia#2055 — the kernel's agent-selection service carries out
-  # `/agent <name>` / `/agent` / `/agents` for this conversation. Absent on an
-  # older kernel: the command text then flows on as an ordinary message.
-  - "agentSelection@1"
 provides: []
 
 # Generic admin-UI iframe surface (rendered by web-ui for any plugin that

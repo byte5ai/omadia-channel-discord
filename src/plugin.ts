@@ -1,10 +1,9 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import * as channelSdk from '@omadia/channel-sdk';
 import {
+  getChatAgent,
   InMemorySpeakerHistoryStore,
-  type ChatAgent,
   type ChannelHandle,
   type CoreApi,
 } from '@omadia/channel-sdk';
@@ -15,7 +14,7 @@ import { PendingChoices } from './choices.js';
 import { DiscordConnection, type GuildResponsePolicy } from './discordConnection.js';
 import { DiscordRosterProvider } from './roster.js';
 import { createChannelState } from './state.js';
-import { runTurn, type AgentCommandLike, type TurnDeps } from './turn.js';
+import { planTurn, type TurnDeps } from './turn.js';
 
 /**
  * Channel-plugin entry. The kernel's dynamic channel resolver imports this
@@ -39,10 +38,9 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   const ignoreBots = ctx.config.get<boolean>('ignore_bots') ?? true;
   const allowlist = parseAllowlist(ctx.config.get<string>('allowlist') ?? '');
 
-  // Resolve the orchestrator's ChatAgent. Prefers the SDK's getChatAgent()
-  // helper; falls back to the raw 'chatAgent' service lookup so the plugin
-  // still runs on a host whose channel-sdk predates the helper.
-  const agent = resolveChatAgent(ctx);
+  // The orchestrator's ChatAgent: the answer of a host without a channel
+  // resolver. With one, every turn resolves its own agent (src/turn.ts).
+  const agent = getChatAgent(ctx);
   if (!agent) {
     throw new Error(
       '@omadia/channel-discord: orchestrator unavailable (getChatAgent) — the orchestrator plugin must be installed and active',
@@ -55,7 +53,6 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     defaultAgent: agent,
     choices: new PendingChoices(),
     log: (level, message, context) => core.log(level, message, context),
-    ...optionalAgentCommandParser(),
   };
 
   const conn = new DiscordConnection({
@@ -68,7 +65,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     guildMembersIntent,
     enableSlashCommand,
     speakerHistory: new InMemorySpeakerHistoryStore(),
-    runTurn: (turn) => runTurn(turnDeps, turn),
+    planTurn: (turn) => planTurn(turnDeps, turn),
   });
 
   // Who is in a conversation: the kernel's audience floor needs it to answer
@@ -111,32 +108,6 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
       await conn.close();
     },
   };
-}
-
-/**
- * Resolve the orchestrator's {@link ChatAgent}. Prefers the SDK helper
- * `getChatAgent(ctx)` (the blessed, typed path); falls back to the raw
- * service-registry lookup so the plugin also runs on a host whose
- * `@omadia/channel-sdk` predates the helper. Accessed via the namespace so a
- * missing export is just `undefined` at runtime rather than a module-load
- * error.
- */
-function resolveChatAgent(ctx: PluginContext): ChatAgent | undefined {
-  const helper = (channelSdk as { getChatAgent?: (c: PluginContext) => ChatAgent | undefined })
-    .getChatAgent;
-  if (helper) return helper(ctx);
-  return ctx.services.get<{ agent: ChatAgent }>('chatAgent')?.agent;
-}
-
-/**
- * The SDK's `parseAgentCommand` (kernel #2055), when this host's SDK has it.
- * Read off the namespace so a host that predates it just yields `undefined`
- * instead of failing the module load.
- */
-function optionalAgentCommandParser(): Pick<TurnDeps, 'parseAgentCommand'> {
-  const parse = (channelSdk as { parseAgentCommand?: (text: string) => AgentCommandLike | undefined })
-    .parseAgentCommand;
-  return parse ? { parseAgentCommand: parse } : {};
 }
 
 /** Validate the guild-response policy enum, defaulting to 'mention'. */

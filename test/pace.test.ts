@@ -3,10 +3,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { paceAckText } from '@omadia/channel-sdk';
+import { InMemorySpeakerHistoryStore, paceAckText, type SemanticAnswer } from '@omadia/channel-sdk';
 
-import { MESSAGE_PACE, runPaced, SLASH_PACE } from '../src/pace.js';
-import { manualClock } from './helpers.js';
+import { deliverToMessage } from '../src/delivery.js';
+import { acknowledgeAs, MESSAGE_PACE, runPaced, SLASH_PACE } from '../src/pace.js';
+import { manualClock, MIRA } from './helpers.js';
 
 function pending<T>() {
   let release: (v: T) => void = () => undefined;
@@ -102,5 +103,43 @@ describe('Discord pace', () => {
       runPaced(async () => { throw new Error('boom'); }, MESSAGE_PACE, { acknowledge: async () => undefined }, { clock }),
       /boom/,
     );
+  });
+});
+
+describe('acknowledgement under the agent\'s name (spec 2042 §5.8)', () => {
+  it('goes out as the resolved agent\'s own words, never as system', async () => {
+    const { clock, advance } = manualClock();
+    const posted: SemanticAnswer[] = [];
+    const work = pending<string>();
+    const run = runPaced(
+      () => work.promise,
+      MESSAGE_PACE,
+      { acknowledge: acknowledgeAs(MIRA, async (answer) => void posted.push(answer)) },
+      { clock, locale: 'de' },
+    );
+    await advance(8_000);
+    work.release('x');
+    await run;
+    assert.equal(posted.length, 1);
+    assert.deepEqual(posted[0]?.speaker, MIRA);
+    assert.equal(posted[0]?.text, paceAckText('de'));
+  });
+
+  it('rendered into the conversation it carries the agent\'s name line when several agents speak', async () => {
+    const history = new InMemorySpeakerHistoryStore();
+    history.record('discord:c1', 'a-paul');
+    const sent: string[] = [];
+    const message = { reply: async (p: { content: string }) => void sent.push(p.content), channel: {} };
+    const post = acknowledgeAs(MIRA, (answer) =>
+      deliverToMessage(message as never, answer, { conversationKey: 'discord:c1', speakerHistory: history, log: () => undefined }),
+    );
+    await post(paceAckText('de'));
+    assert.equal(sent[0], `Mira: ${paceAckText('de')}`);
+  });
+
+  it('without a known speaker nothing is posted (no words made up for nobody)', async () => {
+    const posted: SemanticAnswer[] = [];
+    await acknowledgeAs(undefined, async (answer) => void posted.push(answer))('x');
+    assert.deepEqual(posted, []);
   });
 });

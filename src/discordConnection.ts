@@ -10,7 +10,7 @@ import {
   type Message,
 } from 'discord.js';
 
-import type { IncomingTurn, LogLevel, PaceClock, SemanticAnswer, SpeakerHistoryStore } from '@omadia/channel-sdk';
+import type { IncomingTurn, LogLevel, PaceClock, SpeakerHistoryStore } from '@omadia/channel-sdk';
 
 import {
   deliverEphemeral,
@@ -27,8 +27,9 @@ import {
   isDirectMessage,
   mentionsBot,
 } from './inbound.js';
-import { MESSAGE_PACE, runPaced, SLASH_PACE } from './pace.js';
+import { acknowledgeAs, MESSAGE_PACE, runPaced, SLASH_PACE } from './pace.js';
 import type { RosterMember, RosterSource } from './roster.js';
+import type { PlannedTurn } from './turn.js';
 import {
   AGENT_COMMAND_NAME,
   AGENT_OPTION_NAME,
@@ -69,12 +70,14 @@ export interface DiscordConnectionDeps {
   /** Timer seam for the pace behaviour (tests). */
   paceClock?: PaceClock;
   /**
-   * Drive ONE orchestrator turn. Returns the answer to render, or null when
-   * the orchestrator emitted NO_REPLY (the connection then stays silent for a
-   * passive message / posts a minimal note for an explicit slash command).
-   * May throw — the connection surfaces a friendly error to the right target.
+   * Resolve the agent of ONE turn: its speaker is known up front, and `run()`
+   * drives the orchestrator turn. `run()` yields the answer to render, or null
+   * when the orchestrator emitted NO_REPLY (the connection then stays silent
+   * for a passive message / posts a minimal note for an explicit slash
+   * command). May throw — the connection surfaces a friendly error to the
+   * right target.
    */
-  runTurn: (turn: IncomingTurn) => Promise<SemanticAnswer | null>;
+  planTurn: (turn: IncomingTurn) => PlannedTurn;
 }
 
 const ERROR_TEXT = 'Entschuldigung, dabei ist ein Fehler aufgetreten. Bitte versuche es erneut.';
@@ -228,12 +231,13 @@ export class DiscordConnection {
 
       const turn = buildIncomingTurn(this.deps.channelId, message, text);
       const ctx = this.deliveryContext(message.channelId);
+      const planned = this.deps.planTurn(turn);
       const paced = await runPaced(
-        () => this.deps.runTurn(turn),
+        () => planned.run(),
         MESSAGE_PACE,
         {
           typing: () => this.sendTyping(message),
-          acknowledge: (text) => deliverToMessage(message, systemAnswer(text), ctx),
+          acknowledge: acknowledgeAs(planned.speaker, (answer) => deliverToMessage(message, answer, ctx)),
         },
         this.paceOptions(turn),
       );
@@ -293,13 +297,12 @@ export class DiscordConnection {
   ): Promise<void> {
     const ctx = this.deliveryContext(turn.conversationId);
     try {
+      const planned = this.deps.planTurn(turn);
       const paced = await runPaced(
-        () => this.deps.runTurn(turn),
+        () => planned.run(),
         SLASH_PACE,
         {
-          acknowledge: async (text) => {
-            await deliverToInteraction(interaction, systemAnswer(text), ctx);
-          },
+          acknowledge: acknowledgeAs(planned.speaker, (answer) => deliverToInteraction(interaction, answer, ctx)),
         },
         this.paceOptions(turn),
       );

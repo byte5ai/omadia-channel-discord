@@ -1,6 +1,12 @@
 import type { BaseMessageOptions, Message } from 'discord.js';
 
-import { admitDecorations, type LogLevel, type SemanticAnswer, type SystemNotice } from '@omadia/channel-sdk';
+import {
+  admitDecorations,
+  type AgentSpeaker,
+  type LogLevel,
+  type SemanticAnswer,
+  type SystemNotice,
+} from '@omadia/channel-sdk';
 
 import {
   chunkContent,
@@ -49,16 +55,35 @@ export function noticeAnswer(notice: SystemNotice): SemanticAnswer {
   return systemAnswer(notice.text, notice);
 }
 
-/** Render an answer, with the checks every outgoing message passes. */
+/**
+ * The one acknowledgement of long work, in the agent's own name (spec 2042
+ * §5.8): the pace text is that agent's words, so it goes out under its speaker.
+ */
+export function agentAcknowledgement(text: string, speaker: AgentSpeaker): SemanticAnswer {
+  return { text, speaker };
+}
+
+/** Shown instead of an answer nobody can be named for. */
+export const UNATTRIBUTED_TEXT =
+  'Die Antwort konnte keinem Agenten zugeordnet werden und wurde deshalb nicht gesendet. Bitte versuche es erneut.';
+
+/**
+ * Render an answer, with the checks every outgoing message passes.
+ *
+ * Fail closed on attribution (INV-4): the kernel stamps every answer with its
+ * speaker, so an answer without one is a contract violation. Its text is NOT
+ * sent, as nobody could be named for it; the user gets a `system` notice
+ * instead of silence, and the log an error.
+ */
 function prepare(answer: SemanticAnswer, ctx: DeliveryContext): BaseMessageOptions[] {
+  let outgoing = answer;
   if (answer.speaker === undefined) {
-    // The kernel stamps every answer (INV-4). An answer without one comes from
-    // a kernel that predates the contract; still deliver it, but make it visible.
-    ctx.log('warn', 'discord answer without speaker (kernel predates the speaker contract)', {
+    ctx.log('error', 'discord answer without speaker refused (kernel contract violation, INV-4)', {
       conversation: ctx.conversationKey,
     });
+    outgoing = systemAnswer(UNATTRIBUTED_TEXT);
   }
-  const result = renderAnswer(answer, ctx);
+  const result = renderAnswer(outgoing, ctx);
   // Defence in depth: the renderer attaches no decoration today. Should one be
   // added without a registry entry for this channel, say so loudly in the log.
   const { refused } = admitDecorations(DISCORD_CHANNEL_TYPE, result.decorations);

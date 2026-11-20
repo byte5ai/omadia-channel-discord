@@ -15,6 +15,7 @@ import {
   deliverToMessage,
   noticeAnswer,
   systemAnswer,
+  UNATTRIBUTED_TEXT,
 } from '../src/delivery.js';
 import { agentAnswer, MIRA } from './helpers.js';
 
@@ -62,14 +63,15 @@ describe('emitter paths (criterion 5)', () => {
     assert.equal(noticeAnswer(notice).systemNotice, notice);
   });
 
-  it('an answer without a speaker is still delivered but reported', async () => {
+  it('an answer without a speaker is refused (INV-4): a system notice goes out, its text never does', async () => {
     const { entries, ctx } = logs();
-    const sent: unknown[] = [];
-    const message = { reply: async (p: unknown) => void sent.push(p), channel: {} };
-    await deliverToMessage(message as never, { text: 'hallo' }, ctx);
-    assert.equal(sent.length, 1);
-    assert.ok(entries.some((e) => e.level === 'warn' && /without speaker/.test(e.message)));
+    const sent: { content: string }[] = [];
+    const message = { reply: async (p: { content: string }) => void sent.push(p), channel: {} };
+    await deliverToMessage(message as never, { text: 'geheimer Inhalt' }, ctx);
+    assert.deepEqual(sent.map((p) => p.content), [UNATTRIBUTED_TEXT]);
+    assert.ok(entries.some((e) => e.level === 'error' && /without speaker/.test(e.message)));
     await deliverToMessage(message as never, agentAnswer(MIRA, 'hallo'), ctx);
+    assert.equal(sent[1]?.content, 'hallo');
     assert.equal(entries.filter((e) => /without speaker/.test(e.message)).length, 1);
   });
 

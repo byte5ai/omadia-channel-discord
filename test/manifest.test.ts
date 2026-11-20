@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 const read = (name: string): string => readFileSync(new URL(`../${name}`, import.meta.url), 'utf8');
@@ -11,9 +11,18 @@ describe('package and manifest', () => {
     assert.equal(manifest, pkg.version);
   });
 
-  it('declares the agent selection service as an optional requirement and no buttons capability', () => {
+  it('declares no agent selection service: /agent, /agents are plain text for the resolver\'s ChatAgent', () => {
     const manifest = read('manifest.yaml');
-    assert.match(manifest, /optional_requires:[\s\S]*"agentSelection@1"/);
+    assert.ok(!/agentSelection/.test(manifest.replace(/^\s*#.*$/gm, '')));
+    assert.match(manifest, /optional_requires:\s*\n\s*- "channelResolver@1"/);
     assert.ok(!/- "buttons"/.test(manifest));
+  });
+
+  it('no source calls an agent-selection service or parses the agent command itself', () => {
+    const src = new URL('../src/', import.meta.url);
+    for (const file of readdirSync(src).filter((f) => f.endsWith('.ts'))) {
+      const code = readFileSync(new URL(file, src), 'utf8').replace(/^\s*(\*|\/\/|\/\*).*$/gm, '');
+      assert.ok(!/agentSelection|AGENT_SELECTION|parseAgentCommand/.test(code), file);
+    }
   });
 });
