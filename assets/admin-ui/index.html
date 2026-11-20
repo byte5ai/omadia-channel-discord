@@ -97,7 +97,7 @@
           <ol class="dc-steps">
             <li>Einladungs-Link öffnen.</li>
             <li>Server auswählen und <b>Autorisieren</b>.</li>
-            <li>Bot per Direktnachricht oder mit <span class="dc-badge">@Erwähnung</span> / <span class="dc-badge">/ask</span> ansprechen.</li>
+            <li>Bot per Direktnachricht oder mit <span class="dc-badge">@Erwähnung</span> / <span class="dc-badge">/ask</span> ansprechen. Mit <span class="dc-badge">/agent Name</span> wählst du den Agenten, mit <span class="dc-badge">/agents</span> siehst du die wählbaren.</li>
           </ol>
           <p class="dc-meta">
             Aktiv in <span id="guild-count">0</span> Server(n) ·
@@ -149,7 +149,7 @@
           el('invite-url').textContent = s.inviteUrl;
           el('invite-open').href = s.inviteUrl;
         }
-        el('slash-status').textContent = s.slashCommandReady ? '/ask aktiv' : 'aus';
+        el('slash-status').textContent = s.slashCommandReady ? '/ask, /agent, /agents aktiv' : 'aus';
 
         const interstitial = (s.status === 'connecting' || s.status === 'starting');
         show('info-section', interstitial);

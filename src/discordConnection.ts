@@ -1,23 +1,52 @@
 import {
-  ActionRowBuilder,
-  ButtonBuilder,
+  ChannelType,
   Client,
-  EmbedBuilder,
   Events,
   GatewayIntentBits,
   Partials,
   PermissionFlagsBits,
-  type BaseMessageOptions,
+  type ChatInputCommandInteraction,
   type Interaction,
   type Message,
 } from 'discord.js';
 
-import type { IncomingTurn, LogLevel, SemanticAnswer } from '@omadia/channel-sdk';
+import type {
+  ConversationMessageEvent,
+  IncomingTurn,
+  LogLevel,
+  PaceClock,
+  SpeakerHistoryStore,
+} from '@omadia/channel-sdk';
 
-import { buildIncomingTurn, extractText, isDirectMessage, mentionsBot } from './inbound.js';
-import type { InteractionRegistry } from './interactions.js';
-import { chunkContent, renderAnswer, type DiscordRenderResult } from './renderer.js';
-import { ASK_COMMAND_NAME, ASK_OPTION_NAME, registerSlashCommands } from './slashCommands.js';
+import {
+  deliverEphemeral,
+  deliverSlashResult,
+  deliverToInteraction,
+  deliverToMessage,
+  systemAnswer,
+  type DeliveryContext,
+} from './delivery.js';
+import {
+  buildIncomingTurn,
+  buildSlashTurn,
+  extractText,
+  isDirectMessage,
+  mentionsBot,
+} from './inbound.js';
+import { buildCreatedEvent, discordBotChannelKey } from './conversationEvents.js';
+import { acknowledgeAs, MESSAGE_PACE, runPaced, SLASH_PACE } from './pace.js';
+import type { RosterMember, RosterSource } from './roster.js';
+import type { ProactiveChannel, SendPort } from './sendProviders.js';
+import type { PlannedTurn } from './turn.js';
+import {
+  AGENT_COMMAND_NAME,
+  AGENT_OPTION_NAME,
+  AGENTS_COMMAND_NAME,
+  ASK_COMMAND_NAME,
+  ASK_OPTION_NAME,
+  commandAsText,
+  registerSlashCommands,
+} from './slashCommands.js';
 import { patchState, type ChannelState } from './state.js';
 
 export type LogSink = (level: LogLevel, message: string, context?: Record<string, unknown>) => void;
@@ -41,20 +70,45 @@ export interface DiscordConnectionDeps {
   policy: AccessPolicy;
   /** Request the privileged Message-Content gateway intent (needed for guild 'all' mode). */
   messageContentIntent: boolean;
+  /** Request the privileged Server Members gateway intent (needed to list who is in a server channel). */
+  guildMembersIntent: boolean;
   enableSlashCommand: boolean;
-  registry: InteractionRegistry;
+  /** Which agents spoke in which conversation (name-line decision, INV-4). */
+  speakerHistory: SpeakerHistoryStore;
   /**
-   * Drive ONE orchestrator turn. Returns the answer to render, or null when
-   * the orchestrator emitted NO_REPLY (the connection then stays silent for a
-   * passive message / posts a minimal note for an explicit slash command).
-   * May throw — the connection surfaces a friendly error to the right target.
+   * Tell the kernel about a received message (`core.emitConversationMessage`).
+   * Absent on a kernel without the conversation-message registry: nothing is
+   * emitted then. Fire-and-forget; the kernel drops what no subscription wants.
    */
-  runTurn: (turn: IncomingTurn) => Promise<SemanticAnswer | null>;
+  emitConversationMessage?: (event: ConversationMessageEvent) => void;
+  /**
+   * Like `emitConversationMessage`, but the kernel says whether it consumed the
+   * message as the typed answer to an open question (`core.reportConversationMessage`).
+   * Used for a message that would start a turn: a consumed answer starts none.
+   * Absent: the message is emitted and the turn runs, as before.
+   */
+  reportConversationMessage?: (event: ConversationMessageEvent) => Promise<{ answeredCard: boolean }>;
+  /** How long a turn waits for that report before it runs anyway. Default 1.5 s. */
+  reportTimeoutMs?: number;
+  /** Timer seam for the pace behaviour (tests). */
+  paceClock?: PaceClock;
+  /**
+   * Resolve the agent of ONE turn: its speaker is known up front, and `run()`
+   * drives the orchestrator turn. `run()` yields the answer to render, or null
+   * when the orchestrator emitted NO_REPLY (the connection then stays silent
+   * for a passive message / posts a minimal note for an explicit slash
+   * command). May throw — the connection surfaces a friendly error to the
+   * right target.
+   */
+  planTurn: (turn: IncomingTurn) => PlannedTurn;
 }
 
-const ACK_EMOJI = '👀';
-const ERROR_TEXT = '⚠️ Entschuldigung, dabei ist ein Fehler aufgetreten. Bitte versuche es erneut.';
-const EXPIRED_TEXT = '⌛ Dieser Button ist abgelaufen. Bitte stelle die Frage erneut.';
+/** A slow report never delays a turn longer than this; the answer is then unknown, i.e. no answer. */
+const REPORT_TIMEOUT_MS = 1_500;
+
+const ERROR_TEXT = 'Entschuldigung, dabei ist ein Fehler aufgetreten. Bitte versuche es erneut.';
+const NOT_ALLOWED_TEXT = 'Du darfst diesen Bot hier nicht verwenden.';
+const NO_ANSWER_TEXT = 'Keine Antwort.';
 
 /**
  * Owns the long-lived Discord Gateway (discord.js) client: login → ready →
@@ -66,6 +120,7 @@ const EXPIRED_TEXT = '⌛ Dieser Button ist abgelaufen. Bitte stelle die Frage e
 export class DiscordConnection {
   private readonly client: Client;
   private botUserId = '';
+  private botKey = '';
   private intentionalClose = false;
 
   constructor(private readonly deps: DiscordConnectionDeps) {
@@ -75,6 +130,7 @@ export class DiscordConnection {
       GatewayIntentBits.DirectMessages,
     ];
     if (deps.messageContentIntent) intents.push(GatewayIntentBits.MessageContent);
+    if (deps.guildMembersIntent) intents.push(GatewayIntentBits.GuildMembers);
 
     this.client = new Client({
       intents,
@@ -118,6 +174,7 @@ export class DiscordConnection {
 
   private onReady(client: Client<true>): void {
     this.botUserId = client.user.id;
+    this.botKey = discordBotChannelKey(client.application?.id ?? client.user.id);
     const inviteUrl = buildInviteUrl(client.user.id);
     patchState(this.deps.state, {
       status: 'connected',
@@ -143,6 +200,14 @@ export class DiscordConnection {
     }
   }
 
+  private deliveryContext(conversationKey: string): DeliveryContext {
+    return {
+      conversationKey: `discord:${conversationKey}`,
+      speakerHistory: this.deps.speakerHistory,
+      log: this.deps.log,
+    };
+  }
+
   private async onMessageCreate(message: Message): Promise<void> {
     try {
       if (message.partial) {
@@ -163,18 +228,33 @@ export class DiscordConnection {
       } else {
         const policy = this.deps.policy.guildPolicy;
         if (policy === 'off') return;
-        if (policy === 'mention' && !mentionsBot(message, this.botUserId)) return;
       }
 
+      // Not allowlisted: no turn, and nothing is told to the kernel either.
       if (!this.isAllowlisted(message.author.id, message.guildId)) {
-        this.deps.log('info', 'discord message dropped (not allowlisted)', {
-          user: message.author.id,
-          guild: message.guildId,
-        });
+        if (dm || this.deps.policy.guildPolicy === 'all' || mentionsBot(message, this.botUserId)) {
+          this.deps.log('info', 'discord message dropped (not allowlisted)', {
+            user: message.author.id,
+            guild: message.guildId,
+          });
+        }
         return;
       }
 
       const text = extractText(message, this.botUserId);
+      // Before the mention gate: a typed reply to a question need not mention the bot.
+      const startsTurn = dm || this.deps.policy.guildPolicy === 'all' || mentionsBot(message, this.botUserId);
+      const isAnswer = await this.reportCreated(message, text, startsTurn);
+      if (isAnswer) {
+        // The kernel took it as the typed answer to an open question: no turn,
+        // no acknowledgement, no reply from the agent.
+        this.deps.log('info', 'discord message was the answer to an open question', {
+          channel: message.channelId,
+          user: message.author.id,
+        });
+        return;
+      }
+      if (!startsTurn) return;
       if (!text) {
         // In guild 'all' mode without the privileged Message-Content intent the
         // body is redacted — make that visible rather than silently dropping.
@@ -192,141 +272,224 @@ export class DiscordConnection {
         dm,
       });
 
-      // ACK first (OpenClaw-style) so the user sees it was picked up.
-      void message.react(ACK_EMOJI).catch(() => {});
-      void this.sendTyping(message);
-
       const turn = buildIncomingTurn(this.deps.channelId, message, text);
-      const answer = await this.deps.runTurn(turn);
-      if (!answer) return; // NO_REPLY — stay silent on a passive message
+      const ctx = this.deliveryContext(message.channelId);
+      const planned = this.deps.planTurn(turn);
+      const paced = await runPaced(
+        () => planned.run(),
+        MESSAGE_PACE,
+        {
+          typing: () => this.sendTyping(message),
+          acknowledge: acknowledgeAs(planned.speaker, (answer) => deliverToMessage(message, answer, ctx)),
+        },
+        this.paceOptions(turn),
+      );
+      if (!paced.result) return; // NO_REPLY — stay silent on a passive message
 
-      const result = renderAnswer(answer, {
-        conversationId: message.channelId,
-        registry: this.deps.registry,
-      });
-      await this.replyToMessage(message, result);
+      await deliverToMessage(message, paced.result, ctx);
     } catch (err) {
       this.deps.log('error', 'error handling discord message', {
         error: (err as Error).message,
         channel: message.channelId,
       });
-      await this.replyToMessage(message, textResult(ERROR_TEXT)).catch(() => {});
+      await deliverToMessage(
+        message,
+        systemAnswer(ERROR_TEXT),
+        this.deliveryContext(message.channelId),
+      ).catch(() => {});
+    }
+  }
+
+  /**
+   * Tell the kernel about a received message. Returns true when the kernel
+   * consumed it as the typed answer to an open question (only asked for a
+   * message that would start a turn). Never throws and never holds the turn
+   * longer than the report timeout.
+   */
+  private async reportCreated(message: Message, text: string | undefined, startsTurn: boolean): Promise<boolean> {
+    const { reportConversationMessage: report, emitConversationMessage: emit } = this.deps;
+    if ((!report && !emit) || !this.botKey) return false;
+    let event: ConversationMessageEvent | undefined;
+    try {
+      event = buildCreatedEvent(this.deps.channelId, this.botKey, this.botUserId, message, text);
+    } catch (err) {
+      this.deps.log('warn', 'discord conversation event not built', { error: (err as Error).message });
+      return false;
+    }
+    if (!event) return false;
+    if (startsTurn && report) return this.awaitReport(() => report(event), message.channelId);
+    try {
+      emit?.(event);
+    } catch (err) {
+      this.deps.log('warn', 'discord conversation event not emitted', { error: (err as Error).message });
+    }
+    return false;
+  }
+
+  /** The report's verdict, or false when it fails or takes longer than the timeout. */
+  private async awaitReport(report: () => Promise<{ answeredCard: boolean }>, channelId: string): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), this.deps.reportTimeoutMs ?? REPORT_TIMEOUT_MS);
+    });
+    try {
+      const verdict = await Promise.race([Promise.resolve().then(report), timedOut]);
+      if (verdict === 'timeout') {
+        this.deps.log('warn', 'discord conversation report timed out; the turn runs', { channel: channelId });
+        return false;
+      }
+      return verdict.answeredCard === true;
+    } catch (err) {
+      this.deps.log('warn', 'discord conversation report failed; the turn runs', {
+        error: (err as Error).message,
+        channel: channelId,
+      });
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
   private async onInteractionCreate(interaction: Interaction): Promise<void> {
-    // /ask slash command
-    if (interaction.isChatInputCommand() && interaction.commandName === ASK_COMMAND_NAME) {
-      const question = interaction.options.getString(ASK_OPTION_NAME, true);
-      if (!this.isAllowlisted(interaction.user.id, interaction.guildId)) {
-        await interaction.reply({ content: EXPIRED_TEXT, ephemeral: true }).catch(() => {});
-        return;
-      }
-      await interaction.deferReply();
-      const turn: IncomingTurn = {
-        channelId: this.deps.channelId,
-        conversationId: interaction.channelId ?? `dm:${interaction.user.id}`,
-        userRef: {
-          kind: 'discord-user',
-          id: interaction.user.id,
-          displayName: interaction.user.globalName ?? interaction.user.username,
-        },
-        text: question,
-        metadata: {
-          via: 'slash',
-          guildId: interaction.guildId ?? null,
-          discordChannelId: interaction.channelId ?? null,
-        },
-      };
-      await this.runAndEditInteraction(interaction, turn);
+    if (!interaction.isChatInputCommand()) return;
+    const text = this.slashCommandText(interaction);
+    if (text === undefined) return;
+
+    const ctx = this.deliveryContext(interaction.channelId ?? `dm:${interaction.user.id}`);
+    if (!this.isAllowlisted(interaction.user.id, interaction.guildId)) {
+      await deliverEphemeral(interaction, systemAnswer(NOT_ALLOWED_TEXT), ctx).catch(() => {});
       return;
     }
+    await interaction.deferReply(); // Discord shows "<bot> is thinking…" itself
+    const turn = buildSlashTurn(this.deps.channelId, interaction, text);
+    await this.runAndEditInteraction(interaction, turn);
+  }
 
-    // Button click (choice option / follow-up)
-    if (interaction.isButton() && this.deps.registry.owns(interaction.customId)) {
-      const payload = this.deps.registry.take(interaction.customId);
-      if (!payload) {
-        await interaction.reply({ content: EXPIRED_TEXT, ephemeral: true }).catch(() => {});
-        return;
-      }
-      await interaction.deferReply();
-      const turn: IncomingTurn = {
-        channelId: this.deps.channelId,
-        conversationId: payload.conversationId,
-        userRef: {
-          kind: 'discord-user',
-          id: interaction.user.id,
-          displayName: interaction.user.globalName ?? interaction.user.username,
-        },
-        text: payload.prompt,
-        metadata: { via: 'button', guildId: interaction.guildId ?? null },
-      };
-      await this.runAndEditInteraction(interaction, turn);
+  /**
+   * The message a native command stands for, or undefined for a command that
+   * is not ours. `/agent …` and `/agents` are NOT interpreted here: the text
+   * goes to the kernel like anything typed, which carries it out.
+   */
+  private slashCommandText(interaction: ChatInputCommandInteraction): string | undefined {
+    switch (interaction.commandName) {
+      case ASK_COMMAND_NAME:
+        return interaction.options.getString(ASK_OPTION_NAME, true);
+      case AGENT_COMMAND_NAME:
+        return commandAsText(AGENT_COMMAND_NAME, interaction.options.getString(AGENT_OPTION_NAME));
+      case AGENTS_COMMAND_NAME:
+        return commandAsText(AGENTS_COMMAND_NAME, null);
+      default:
+        return undefined;
     }
   }
 
-  /** Shared path for slash-command + button interactions: run the turn and
-   *  edit the deferred reply with the rendered answer (or a friendly error). */
+  /** Run the turn of a slash command and put the answer into the deferred reply (or a friendly error). */
   private async runAndEditInteraction(
-    interaction: { editReply: (o: BaseMessageOptions) => Promise<unknown>; followUp: (o: BaseMessageOptions) => Promise<unknown>; channelId: string | null; user: { id: string } },
+    interaction: ChatInputCommandInteraction,
     turn: IncomingTurn,
   ): Promise<void> {
+    const ctx = this.deliveryContext(turn.conversationId);
     try {
-      const answer = await this.deps.runTurn(turn);
-      if (!answer) {
-        await interaction.editReply({ content: '🤐 (keine Antwort)' });
-        return;
-      }
-      const result = renderAnswer(answer, {
-        conversationId: turn.conversationId,
-        registry: this.deps.registry,
-      });
-      const payloads = buildPayloads(result);
-      if (payloads.length === 0) {
-        await interaction.editReply({ content: '🤐 (keine Antwort)' });
-        return;
-      }
-      await interaction.editReply(payloads[0]!);
-      for (const extra of payloads.slice(1)) await interaction.followUp(extra);
+      const planned = this.deps.planTurn(turn);
+      const paced = await runPaced(
+        () => planned.run(),
+        SLASH_PACE,
+        {
+          acknowledge: acknowledgeAs(planned.speaker, (answer) => deliverToInteraction(interaction, answer, ctx)),
+        },
+        this.paceOptions(turn),
+      );
+      const answer = paced.result ?? systemAnswer(NO_ANSWER_TEXT);
+      await deliverSlashResult(interaction, answer, paced, ctx);
     } catch (err) {
       this.deps.log('error', 'error handling discord interaction', { error: (err as Error).message });
-      await interaction.editReply({ content: ERROR_TEXT }).catch(() => {});
+      await deliverToInteraction(interaction, systemAnswer(ERROR_TEXT), ctx).catch(() => {});
     }
   }
 
-  /** Send a rendered result back into the channel a message came from. The
-   *  first chunk is a reply (threaded to the user's message); any overflow
-   *  chunks are plain channel sends; embeds + buttons ride the last chunk. */
-  private async replyToMessage(message: Message, result: DiscordRenderResult): Promise<void> {
-    const payloads = buildPayloads(result);
-    if (payloads.length === 0) return;
-    const channel = message.channel;
-    const sendable = 'send' in channel ? (channel as { send: (o: BaseMessageOptions) => Promise<unknown> }) : null;
-    for (let i = 0; i < payloads.length; i++) {
-      const payload = payloads[i]!;
-      if (i === 0) {
-        await message.reply(payload);
-      } else if (sendable) {
-        await sendable.send(payload);
-      }
-    }
+  private paceOptions(turn: IncomingTurn): {
+    locale?: string;
+    clock?: PaceClock;
+    onHookError: (hook: 'typing' | 'ack', error: unknown) => void;
+  } {
+    const locale = (turn.metadata as { locale?: unknown } | undefined)?.locale;
+    return {
+      ...(typeof locale === 'string' ? { locale } : {}),
+      ...(this.deps.paceClock ? { clock: this.deps.paceClock } : {}),
+      onHookError: (hook, error) =>
+        this.deps.log('warn', `discord pace ${hook} failed`, { error: (error as Error).message }),
+    };
   }
 
+  /** The channel's own pace indicator (spec §5.8), instead of a reaction on the user's message. */
   private async sendTyping(message: Message): Promise<void> {
-    try {
-      const channel = message.channel;
-      if ('sendTyping' in channel) {
-        await (channel as { sendTyping: () => Promise<void> }).sendTyping();
-      }
-    } catch {
-      /* typing is cosmetic — ignore failures */
-    }
+    const channel = message.channel;
+    if ('sendTyping' in channel) await (channel as { sendTyping: () => Promise<void> }).sendTyping();
   }
 
-  private isAllowlisted(userId: string, guildId: string | null): boolean {
+  /**
+   * What this bot can tell about who is in a conversation, for the roster
+   * provider. `undefined` when the bot cannot see the channel.
+   */
+  async describeConversation(conversationId: string): Promise<RosterSource | undefined> {
+    let channel;
+    try {
+      channel = await this.client.channels.fetch(conversationId);
+    } catch {
+      return undefined;
+    }
+    if (!channel) return undefined;
+    if (channel.type === ChannelType.DM) {
+      const recipient = channel.recipient ? toRosterMember(channel.recipient) : undefined;
+      return { type: 'direct', ...(recipient ? { recipient } : {}) };
+    }
+    if (channel.isThread() && channel.type === ChannelType.PrivateThread) {
+      return { type: 'unreadable', detail: 'Members of a private thread are not listed.' };
+    }
+    const viewChannel = channel.isThread() ? channel.parent : channel;
+    if (!viewChannel || viewChannel.isDMBased() || !('members' in viewChannel)) {
+      return { type: 'unreadable', detail: 'This kind of channel has no member list.' };
+    }
+    const guild = viewChannel.guild;
+    return {
+      type: 'guild',
+      canListMembers: this.deps.guildMembersIntent,
+      memberCount: guild.memberCount,
+      viewers: async () => {
+        await guild.members.fetch();
+        return [...viewChannel.members.values()].map((m) => toRosterMember(m.user, m.displayName));
+      },
+    };
+  }
+
+  /** This bot as a roster member, once connected. */
+  self(): RosterMember | undefined {
+    const user = this.client.user;
+    return user ? toRosterMember(user) : undefined;
+  }
+
+  /**
+   * Where the kernel's proactive sends (a notification, a post into a
+   * channel) go: the same client, so they share the bot's token and rate state.
+   */
+  sendPort(): SendPort {
+    return {
+      channel: (channelId) => this.proactiveChannel(channelId),
+      directChannel: async (userId) => toProactiveChannel(await (await this.client.users.fetch(userId)).createDM()),
+    };
+  }
+
+  private async proactiveChannel(channelId: string): Promise<ProactiveChannel> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel) throw unknownChannel();
+    return toProactiveChannel(channel);
+  }
+
+  /** The channel's access policy: may this user (or, without one, this server) interact with the bot? */
+  isAllowlisted(userId: string | undefined, guildId: string | null): boolean {
     const allow = this.deps.policy.allowlist;
     if (allow.size === 0) return true;
-    if (allow.has(userId)) return true;
+    if (userId && allow.has(userId)) return true;
     if (guildId && allow.has(guildId)) return true;
     return false;
   }
@@ -348,8 +511,7 @@ function buildInviteUrl(clientId: string): string {
     PermissionFlagsBits.ViewChannel |
     PermissionFlagsBits.SendMessages |
     PermissionFlagsBits.EmbedLinks |
-    PermissionFlagsBits.ReadMessageHistory |
-    PermissionFlagsBits.AddReactions
+    PermissionFlagsBits.ReadMessageHistory
   ).toString();
   const params = new URLSearchParams({
     client_id: clientId,
@@ -359,42 +521,38 @@ function buildInviteUrl(clientId: string): string {
   return `https://discord.com/oauth2/authorize?${params.toString()}`;
 }
 
-/** Turn a rendered result into one or more Discord message payloads, attaching
- *  embeds + components to the LAST chunk only (Discord renders them once). */
-function buildPayloads(result: DiscordRenderResult): BaseMessageOptions[] {
-  const chunks = chunkContent(result.content);
-  const hasSidecars = result.embeds.length > 0 || result.components.length > 0;
-  if (chunks.length === 0) {
-    return hasSidecars ? [withSidecars({}, result, true)] : [];
-  }
-  return chunks.map((content, i) =>
-    withSidecars({ content }, result, i === chunks.length - 1),
-  );
+/** Discord's own "unknown channel" REST error code, for a channel the bot cannot see. */
+const DISCORD_UNKNOWN_CHANNEL = 10003;
+
+function unknownChannel(): Error {
+  return Object.assign(new Error('unknown channel'), { code: DISCORD_UNKNOWN_CHANNEL });
 }
 
-function withSidecars(
-  base: BaseMessageOptions,
-  result: DiscordRenderResult,
-  attach: boolean,
-): BaseMessageOptions {
-  if (!attach) return base;
+/** A fetched channel as a place to post into; one that cannot take messages is an unknown channel. */
+function toProactiveChannel(channel: unknown): ProactiveChannel {
+  const candidate = channel as { send?: unknown; guildId?: unknown; isSendable?: () => boolean };
+  if (typeof candidate.send !== 'function' || (candidate.isSendable && !candidate.isSendable())) {
+    throw unknownChannel();
+  }
   return {
-    ...base,
-    ...(result.embeds.length > 0 ? { embeds: result.embeds } : {}),
-    ...(result.components.length > 0
-      ? { components: result.components as ActionRowBuilder<ButtonBuilder>[] }
-      : {}),
+    send: (o) => (candidate.send as (o: unknown) => Promise<unknown>).call(channel, o),
+    guildId: typeof candidate.guildId === 'string' ? candidate.guildId : null,
   };
 }
 
-function textResult(content: string): DiscordRenderResult {
-  return { content, embeds: [] as EmbedBuilder[], components: [] as ActionRowBuilder<ButtonBuilder>[] };
+/** A discord.js user as a roster member. */
+function toRosterMember(
+  user: { id: string; username: string; globalName?: string | null; bot: boolean },
+  displayName?: string,
+): RosterMember {
+  const name = displayName ?? user.globalName ?? undefined;
+  return { id: user.id, username: user.username, ...(name ? { displayName: name } : {}), isBot: user.bot };
 }
 
 /** Make discord.js login failures actionable in the admin UI. */
 function describeLoginError(message: string): string {
   if (/disallowed intents/i.test(message)) {
-    return 'Login abgelehnt: privilegiertes Intent nicht aktiviert. Deaktiviere "Message-Content-Intent" in den Plugin-Einstellungen ODER aktiviere es im Developer Portal → Bot → Privileged Gateway Intents.';
+    return 'Login abgelehnt: privilegiertes Intent nicht aktiviert. Deaktiviere "Message-Content-Intent" bzw. "Server-Mitglieder-Intent" in den Plugin-Einstellungen ODER aktiviere sie im Developer Portal → Bot → Privileged Gateway Intents.';
   }
   if (/token/i.test(message)) {
     return 'Login fehlgeschlagen: ungültiger Bot-Token. Prüfe den Token im Developer Portal (ggf. "Reset Token") und installiere das Plugin neu.';

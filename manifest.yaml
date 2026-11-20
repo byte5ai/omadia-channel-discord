@@ -17,8 +17,8 @@ identity:
   kind: "channel"
   domain: "discord"
   name: "Discord"
-  version: "0.1.5"                         # === package.json "version"
-  description: "Discord-Channel via discord.js Gateway-Bot. Routet Discord-DMs, @Erwähnungen und den /ask Slash-Command in den Omadia-Orchestrator."
+  version: "0.2.0"                         # === package.json "version"
+  description: "Discord-Channel via discord.js Gateway-Bot. Routet Discord-DMs, @Erwähnungen und die Slash-Commands /ask, /agent und /agents zu den Omadia-Agenten."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -30,7 +30,10 @@ identity:
     - "communication"
 
 compat:
-  core: ">=1.0 <2.0"
+  # Placeholder floor for the kernel release that carries the S1 routing
+  # contract (reject with a ChatAgent, speaker before the answer, one principal
+  # form); the parent session sets the final version.
+  core: ">=1.75.0 <2.0"
   node: ">=20"
 
 depends_on: []
@@ -66,10 +69,22 @@ setup:
       2. Paste this value below as **Discord Bot Token**. It is stored encrypted
          in the vault and **shown only once** — if lost, just "Reset Token" again.
 
-      ### 3. Intents (only for "Respond to every message")
+      ### 3. Intents (only for "Respond to every message" and server channels)
       The default (DMs + @mention) needs **no** privileged intent. Only if you set
       *Behaviour in servers* to **Respond to every message**:
       - Bot tab → **Privileged Gateway Intents** → enable **Message Content Intent** → **Save**.
+
+      **Server channels (groups):** omadia answers in a group only when it knows
+      who is in the channel. Discord sends the member list only to bots with the
+      privileged **Server Members Intent**: enable it in the same place and tick
+      *Request server-members intent* below. Without it the bot answers in DMs only.
+      DMs need no intent.
+
+      ### Choosing an agent
+      This installation is **one** Discord bot. To talk to a specific agent, type
+      `/agent <name>` (or use the slash command) once; `/agents` lists the agents
+      you can choose; `/agent` alone clears your choice. One bot per agent is not
+      supported yet (see the README).
 
       ### 4. Invite the bot to your server
       1. Left sidebar → **OAuth2** → **URL Generator**.
@@ -100,10 +115,22 @@ setup:
          verschlüsselt im Vault gespeichert und **nur einmal angezeigt** — bei
          Verlust einfach erneut „Reset Token".
 
-      ### 3. Intents (nur bei „Auf jede Nachricht")
+      ### 3. Intents (nur bei „Auf jede Nachricht" und Server-Kanälen)
       Standard (DMs + @Erwähnung) braucht **kein** privilegiertes Intent. Nur wenn
       du *Verhalten in Servern* auf **Auf jede Nachricht** stellst:
       - Bot-Tab → **Privileged Gateway Intents** → **Message Content Intent** aktivieren → **Save**.
+
+      **Server-Kanäle (Gruppen):** omadia antwortet in einer Gruppe nur, wenn es
+      weiß, wer im Kanal ist. Discord liefert die Mitgliederliste nur an Bots mit
+      dem privilegierten **Server Members Intent**: am selben Ort aktivieren und
+      unten *Server-Mitglieder-Intent anfordern* anhaken. Ohne ihn antwortet der
+      Bot nur in DMs. DMs brauchen kein Intent.
+
+      ### Agent wählen
+      Diese Installation ist **ein** Discord-Bot. Um mit einem bestimmten Agenten
+      zu sprechen, tippe einmal `/agent <Name>` (oder nutze den Slash-Command);
+      `/agents` listet die wählbaren Agenten; `/agent` allein hebt die Wahl auf.
+      Ein Bot pro Agent wird noch nicht unterstützt (siehe README).
 
       ### 4. Bot auf deinen Server einladen
       1. Linke Leiste → **OAuth2** → **URL Generator**.
@@ -151,10 +178,17 @@ setup:
       required: false
       default: false
 
+    - key: "guild_members_intent"
+      type: "boolean"
+      label: "Server-Mitglieder-Intent anfordern"
+      help: "Nötig, damit omadia in Server-Kanälen weiß, wer anwesend ist, und dort antwortet (Gruppen werden sonst nicht beantwortet). Fordert das privilegierte Server-Members-Intent an — das musst du im Developer Portal → Bot → 'Privileged Gateway Intents' separat aktivieren, sonst schlägt der Login fehl. Für DMs NICHT nötig."
+      required: false
+      default: false
+
     - key: "enable_slash_command"
       type: "boolean"
-      label: "/ask Slash-Command registrieren"
-      help: "Registriert global den Slash-Command /ask <Frage>. Die globale Registrierung kann nach dem ersten Start bis zu einer Stunde brauchen, bis sie in allen Servern erscheint."
+      label: "Slash-Commands registrieren (/ask, /agent, /agents)"
+      help: "Registriert global die Slash-Commands /ask <Frage>, /agent <Name> (Agent wählen; ohne Name: Wahl aufheben) und /agents (wählbare Agenten). Die globale Registrierung kann nach dem ersten Start bis zu einer Stunde brauchen, bis sie in allen Servern erscheint."
       required: false
       default: true
 
@@ -214,6 +248,10 @@ permissions:
 # default chatAgent). A `requires:` entry would be permanently unresolved and
 # drop the channel from the eligible set; `optional_requires:` grants the same
 # declaration the service gate asks for without a resolver edge.
+#
+# There is no agent-selection service to declare: `/agent <name>`, `/agent`
+# and `/agents` reach the ChatAgent the resolver returns as plain text, and
+# that agent carries them out (spec 2042 §5.3, criterion 30).
 requires:
   - "chatAgent@^1"
 optional_requires:
@@ -235,7 +273,6 @@ channel:
   capabilities:
     - "text"
     - "typing_indicator"
-    - "buttons"
   adapters:
     - "text"
     - "markdown"
