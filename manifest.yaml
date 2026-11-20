@@ -17,7 +17,7 @@ identity:
   kind: "channel"
   domain: "discord"
   name: "Discord"
-  version: "0.2.0"                         # === package.json "version"
+  version: "0.3.0"                         # === package.json "version"
   description: "Discord-Channel via discord.js Gateway-Bot. Routet Discord-DMs, @Erwähnungen und die Slash-Commands /ask, /agent und /agents zu den Omadia-Agenten."
   authors:
     - name: "byte5 GmbH"
@@ -30,9 +30,9 @@ identity:
     - "communication"
 
 compat:
-  # Placeholder for the kernel that ships agent channel identities (S7: the
-  # SDK's registerAgentIdentityProvider, asChannelKey per bot, agent_own_bot).
-  # Expected plugin-api 1.79.0; the parent session sets the final range when it lands.
+  # The kernel that ships agent channel identities (plugin-api 1.79.0, S7):
+  # registerAgentIdentityProvider, asChannelKey per bot, agent_own_bot, the
+  # proactive send's speaker and disposer, RoutineTurnInput.conductorBinding.
   core: ">=1.79.0 <2.0"
   node: ">=20"
 

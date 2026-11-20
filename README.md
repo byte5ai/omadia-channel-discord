@@ -56,7 +56,7 @@ omadia answers in a group only when it knows who is in the channel. Discord send
 
 ## How it works in omadia
 
-A channel plugin (`kind: channel`) for omadia core 1.75 or newer (placeholder floor; the final version is set at release). The omadia kernel activates it from `manifest.yaml`, then it opens the Discord Gateway connection. Each inbound message goes to the orchestrator chat agent, and the response comes back to Discord. The channel needs an LLM provider assigned to the orchestrator first, otherwise there is no agent to answer.
+A channel plugin (`kind: channel`) for omadia core 1.79 or newer. The omadia kernel activates it from `manifest.yaml`, then it opens the Discord Gateway connection. Each inbound message goes to the orchestrator chat agent, and the response comes back to Discord. The channel needs an LLM provider assigned to the orchestrator first, otherwise there is no agent to answer.
 
 ## Install
 
