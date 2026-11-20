@@ -46,7 +46,7 @@ If no agent is bound to a channel, the agent is disabled or not available to you
 
 ## Notifications from omadia
 
-omadia can also write to you on its own initiative (a reminder, an escalation): as a direct message to one person, or as a post into a channel the bot can see. These arrive as plain system messages from the bot; because this is one bot, they are never sent as an individual agent. Direct messages respect *Allow DMs* and the allowlist. Polls and question cards are not drawn natively in Discord: omadia asks them as a numbered text question in the message, and you answer by replying to that message (or, in a DM or when only one question is open, by addressing the bot) with the number. omadia reads that reply as the answer. For this the bot reports the messages it can read in a conversation to omadia, under the identity key `@<application-id>` (the id of your Discord application); omadia keeps them only for a conversation an agent moderates and drops all others. A message that is the answer to an open question is not also answered by the agent: the bot waits up to 1.5 s for omadia's verdict and then carries on as usual. In a server the bot sees a message without a mention only with the privileged Message Content intent.
+omadia can also write to you on its own initiative (a reminder, an escalation): as a direct message to one person, or as a post into a channel the bot can see. These arrive as plain system messages from the bot; because this is one bot, they are never sent as an individual agent. Direct messages respect *Allow DMs* and the allowlist. Polls and question cards are not drawn natively in Discord: omadia asks them as a numbered text question in the message, and you answer by replying to that message (or, in a DM or when only one question is open, by addressing the bot) with the number. omadia reads that reply as the answer. For this the bot reports the messages it can read in a conversation to omadia, under the identity key `discord-app:<application-id>` (the id of your Discord application); omadia keeps them only for a conversation an agent moderates and drops all others. A message that is the answer to an open question is not also answered by the agent: the bot waits up to 1.5 s for omadia's verdict and then carries on as usual. In a server the bot sees a message without a mention only with the privileged Message Content intent.
 
 ## Server channels (groups)
 
@@ -54,7 +54,7 @@ omadia answers in a group only when it knows who is in the channel. Discord send
 
 ## How it works in omadia
 
-A channel plugin (`kind: channel`) for omadia core 1.74 or newer (placeholder floor; the final version is set at release). The omadia kernel activates it from `manifest.yaml`, then it opens the Discord Gateway connection. Each inbound message goes to the orchestrator chat agent, and the response comes back to Discord. The channel needs an LLM provider assigned to the orchestrator first, otherwise there is no agent to answer.
+A channel plugin (`kind: channel`) for omadia core 1.76 or newer (placeholder floor; the final version is set at release). The omadia kernel activates it from `manifest.yaml`, then it opens the Discord Gateway connection. Each inbound message goes to the orchestrator chat agent, and the response comes back to Discord. The channel needs an LLM provider assigned to the orchestrator first, otherwise there is no agent to answer.
 
 ## Install
 

@@ -64,7 +64,7 @@ setting); do not publish before that kernel runs.
   `core.emitConversationMessage` (feature-detected): conversation = channel id
   (a thread's own id), author `discord-user`, text without the bot mention,
   `replyToMessageId` for a reply, `addressedToBot` for a mention, a reply that
-  pings the bot, or a DM, receiving identity `@<application-id>`. Sent before
+  pings the bot, or a DM, receiving identity `discord-app:<application-id>`. Sent before
   the mention gate (a typed answer need not mention the bot) and not for a
   person off the allowlist or in a server the bot is switched off in. The
   kernel stores them only for a subscription and turns a typed reply to a
@@ -81,7 +81,7 @@ setting); do not publish before that kernel runs.
   `guild_members_intent` setting, otherwise unknown; servers over 5,000
   members partial).
 - New setting `guild_members_intent` (privileged Server Members intent).
-- `compat.core` is `>=1.74.0 <2.0`, a placeholder floor for the kernel release
+- `compat.core` is `>=1.76.0 <2.0`, a placeholder floor for the kernel release
   with the S1 routing contract; the release session sets the final version.
 - One bot per agent is not supported; the README says why and what it would
   cost an operator.

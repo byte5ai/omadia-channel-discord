@@ -54,7 +54,7 @@ describe('the created event of a received message', () => {
       channelType: 'discord',
       conversationId: 'thread-9',
       conversationType: 'group',
-      receivedByChannelKey: `@${BOT}`,
+      receivedByChannelKey: `discord-app:${BOT}`,
       messageId: 'msg-2',
       revision: 0,
       kind: 'created',
