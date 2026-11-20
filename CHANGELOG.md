@@ -56,9 +56,19 @@ setting); do not publish before that kernel runs.
 - Kernel-initiated sends: a targeted-send provider (DM to one person, by
   `user:discord-user:<id>`) and a conversation-send provider (post into a
   channel or thread), plain text. They declare no own identity (one bot), no
-  poll and no question card; a request naming an identity, a poll or a card is
-  refused with a named outcome and nothing is posted. DMs respect *Allow DMs*
-  and the allowlist.
+  poll and no question card (the kernel posts those as numbered text itself); a
+  request naming an identity, a poll or a card is refused with a named outcome
+  and nothing is posted. The id of the posted Discord message is reported as
+  `messageId`. DMs respect *Allow DMs* and the allowlist.
+- Received messages are reported to the kernel as `created` events through
+  `core.emitConversationMessage` (feature-detected): conversation = channel id
+  (a thread's own id), author `discord-user`, text without the bot mention,
+  `replyToMessageId` for a reply, `addressedToBot` for a mention, a reply that
+  pings the bot, or a DM, receiving identity `@<application-id>`. Sent before
+  the mention gate (a typed answer need not mention the bot) and not for a
+  person off the allowlist or in a server the bot is switched off in. The
+  kernel stores them only for a subscription and turns a typed reply to a
+  numbered question into the `card_answer` (kernel #2086).
 - Group channels: the turn states `conversationType` (`direct` / `group`) and
   the sender in its origin, and the plugin registers a conversation roster
   provider (DM complete; server channel complete with the new

@@ -24,11 +24,11 @@ import { DISCORD_CHANNEL_TYPE } from './renderer.js';
  *    kernel then refuses own-identity sends (`no_identity`) before they reach
  *    the provider, and a request that names an identity anyway is refused here
  *    too, never answered through the one bot;
- *  - no `poll` / `card`: a poll or question card answered by typing needs the
- *    reply routed back as a `card_answer`, which needs a subscription keyed by
- *    the identity that received it, and there is no such key for a single
- *    bot. The kernel falls back to a numbered chat question, which the channel
- *    already carries as plain text (`choices.ts`);
+ *  - no `poll` / `card`: the kernel posts a poll or question card without
+ *    native support as numbered text through `sendToConversation` itself and
+ *    turns a typed reply into the answer; this provider only reports the id
+ *    of the Discord message it posted (`messageId`), which a reply points at.
+ *    The replies reach the kernel as `created` events (`conversationEvents.ts`);
  *  - no `mentions`, no `aiLabel`: the kernel adds the instance's disclosure
  *    line to the text instead.
  */

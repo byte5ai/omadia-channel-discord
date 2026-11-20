@@ -134,7 +134,7 @@ describe('conversation send (a post into a channel)', () => {
   it('posts into the channel and reports the message', async () => {
     const { deps, posted } = setup();
     const out = await createDiscordConversationSendProvider(deps).sendToConversation(CHANNEL, text('Hinweis'));
-    assert.equal(out.outcome, 'delivered');
+    assert.deepEqual(out, { outcome: 'delivered', messageId: 'm-1', conversationId: `c-${CHANNEL}` });
     assert.deepEqual(posted, [{ target: CHANNEL, content: 'Hinweis' }]);
   });
 
