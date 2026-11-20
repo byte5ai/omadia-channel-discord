@@ -29,6 +29,17 @@ setting); do not publish before that kernel runs.
   channel resolver that throws is a `system` text, never another agent. With
   nothing bound, `/agent` is answered by the conversation's key (its own
   selection), not the server's.
+- The agent is resolved under the NARROWEST conversation key only, through the
+  SDK's `resolveChannelRoute`: the channel id, the thread's own id in a thread.
+  The earlier second probe of the server id is gone (S1: the selection hangs on
+  the `channelKey` of the resolve call, and a probe of the server would store
+  `/agent` server-wide): a binding made on a whole server no longer applies,
+  bind the channel or thread instead. The shared `chatAgent@1` is asked only on
+  a host with no channel resolver; with one it is never used, also not after a
+  reject (S1: it refuses non-canvas turns).
+- The sender's language (`de`/`en`) goes to the resolver: the slash command's
+  locale, else the server's preferred locale; a DM without a slash command has
+  none and is left out, so notices come in German.
 - The sender is `channelUserPrincipal({kind: 'discord-user', id})` from the SDK
   (`user:discord-user:<snowflake>`, or `user:<email>` when the channel ever
   carries a verified address), the one principal form for every channel, in

@@ -36,9 +36,11 @@ Answers read like a colleague's message: plain text, no status line, buttons or 
 | `/agents` | Lists the agents you can choose here. |
 | `/agent` | Clears your choice; the conversation's binding or default applies again. |
 
-The choice is stored by omadia per user and conversation, so it survives a restart, and two people in one channel can talk to different agents. A thread is its own conversation, so a choice made in a channel does not carry into its threads. The plugin passes the text on unchanged (the slash commands stand for exactly the text you would type); omadia carries the commands out and answers. Typed as a plain message, `/agent` alone clears the choice and `/agents` shows the list.
+The choice is stored by omadia per user and conversation, so it survives a restart, and two people in one channel can talk to different agents. The choice hangs on the narrowest conversation: the channel id, or the thread's own id inside a thread (never the server), plus you. A choice made in a channel does not carry into its threads, and an operator binds an agent to a channel or thread id, not to a whole server. The plugin passes the text on unchanged (the slash commands stand for exactly the text you would type); omadia carries the commands out and answers. Typed as a plain message, `/agent` alone clears the choice and `/agents` shows the list.
 
 **One bot per agent (own name and avatar in Discord) is not supported yet.** Discord has no API to create bots, so every agent would cost you its own Application in the Developer Portal, its own token, its own invite to each server and its own gateway connection and intent settings, and this plugin takes exactly one token and has no binding key per bot. If you need it today, the choice via `/agent` is the way. With several agents in a conversation the bot puts a short name line ("Paul: …") before an answer where the speaker would otherwise be unclear, never on every message of a one-agent conversation; a colleague's contribution appears as "Paul: …" in the text.
+
+The bot also tells omadia your language (the language of a slash command, else the server's preferred language, as German or English) so the system messages come in it; in a DM without a slash command nothing is known and they are German.
 
 If no agent is bound to a channel, the agent is disabled or not available to you, the bot answers with a system message that says so, never with another agent.
 
