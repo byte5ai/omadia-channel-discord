@@ -49,6 +49,57 @@ describe('roster', () => {
     assert.match(roster.statusDetail ?? '', /more than/);
   });
 
+  it('a member list shorter than the server is partial, never complete', async () => {
+    const roster = await readRoster(
+      { type: 'guild', canListMembers: true, memberCount: 4, viewers: async () => [ULI, MAX], listedCount: () => 3 }, BOT);
+    assert.equal(rosterStatusOf(roster), 'partial');
+    assert.equal(roster.partial, true);
+    assert.match(roster.statusDetail ?? '', /3 of the server's 4/);
+    const full = await readRoster(
+      { type: 'guild', canListMembers: true, memberCount: 3, viewers: async () => [ULI, MAX], listedCount: () => 3 }, BOT);
+    assert.equal(rosterStatusOf(full), 'complete');
+  });
+
+  it('a join within the cache lifetime: seen by a fresh query, and by any query once the join dropped the cache', async () => {
+    let members = [ULI];
+    let reads = 0;
+    const provider = new DiscordRosterProvider({
+      describe: async () => ({
+        type: 'guild', canListMembers: true, memberCount: members.length + 1,
+        viewers: async () => (reads += 1, members), listedCount: () => members.length + 1,
+      }),
+      self: () => BOT,
+      now: () => new Date(0),
+      ttlMs: 60_000,
+    });
+    assert.deepEqual(ids((await provider.getRoster('c1'))!), ['bot', 'u1']);
+    members = [ULI, MAX];
+    assert.deepEqual(ids((await provider.getRoster('c1'))!), ['bot', 'u1'], 'cached');
+    const fresh = await provider.getRoster('c1', { fresh: true });
+    assert.deepEqual(ids(fresh!), ['bot', 'u1', 'u2']);
+    assert.equal(rosterStatusOf(fresh!), 'complete');
+    members = [ULI];
+    provider.invalidateAll();
+    assert.deepEqual(ids((await provider.getRoster('c1'))!), ['bot', 'u1']);
+    assert.equal(reads, 3);
+  });
+
+  it('a failed fresh query is unknown and is not cached: the next query asks again', async () => {
+    let fail = true;
+    let reads = 0;
+    const provider = new DiscordRosterProvider({
+      describe: async () => ({
+        type: 'guild', canListMembers: true, memberCount: 2,
+        viewers: async () => { reads += 1; if (fail) throw new Error('members chunk timed out'); return [ULI]; },
+      }),
+      self: () => BOT,
+    });
+    assert.equal(rosterStatusOf((await provider.getRoster('c1', { fresh: true }))!), 'unknown');
+    fail = false;
+    assert.equal(rosterStatusOf((await provider.getRoster('c1'))!), 'complete');
+    assert.equal(reads, 2);
+  });
+
   it('a member list that fails to load is unknown, not an empty complete roster', async () => {
     const roster = await readRoster(
       { type: 'guild', canListMembers: true, memberCount: 3, viewers: async () => { throw new Error('timeout'); } }, BOT);
