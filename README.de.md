@@ -56,6 +56,29 @@ omadia kann dich auch von sich aus anschreiben (eine Erinnerung, eine Eskalation
 
 omadia antwortet in einer Gruppe nur, wenn es weiß, wer im Kanal ist. Discord liefert die Mitgliederliste nur an Bots mit dem privilegierten **Server-Members-Intent**: im Developer Portal aktivieren (Bot, Privileged Gateway Intents) und in den Plugin-Einstellungen *Server-Mitglieder-Intent anfordern* anhaken. Ohne ihn ist die Teilnehmerliste eines Server-Kanals „unbekannt", und der Bot antwortet nur in Direktnachrichten. Direktnachrichten brauchen kein Intent. Server mit mehr als 5.000 Mitgliedern gelten als teilweise bekannt, omadia behandelt sie also ebenfalls als unbekannt.
 
+## Facilitatoren (moderierte Gruppen)
+
+Ein Facilitator-Agent (Spec 2043) moderiert einen Server-Kanal oder Thread: er sammelt Beiträge und Stimmen, hält den Stand und erinnert. In Discord gilt:
+
+- **Ein eigener Bot.** Ein Facilitator braucht einen eigenen Bot (siehe *Ein Bot pro Agent* oben). Zwei Facilitatoren posten als zwei verschiedene Bots, auch in zwei verschiedenen Kanälen.
+- **Jede Nachricht, nur dort, wo er moderiert.** Solange eine Moderation ein Nachrichten-Abo für einen Kanal hält, gibt ihr Bot jede menschliche Nachricht dort an omadia weiter (auch ohne Erwähnung) und startet selbst keine Antwort: die Moderation antwortet. In allen anderen Kanälen bleiben die Erwähnungsregeln. omadia fragt das Plugin vorher, ob der Bot das in diesem Kanal kann (Readiness); die Antwort nennt, was fehlt: das **Message-Content-Intent** (ohne es liefert Discord den Text von Nachrichten ohne Erwähnung nicht), abgeschaltete Server-Kanäle, ein Server, der nicht auf der Allowlist steht, oder die Rechte Kanal ansehen, Nachrichtenverlauf lesen und Nachrichten senden (im Thread: Nachrichten in Threads senden).
+- **Anwesenheit.** omadia lässt eine Moderation erst mitlesen, wenn der Bot im Kanal gesehen wurde. Der Bot meldet das mit der ersten Nachricht, die er dort empfängt (und alle 12 Stunden erneut). Jemand muss dort also zuerst schreiben, etwa die Nachricht, mit der die Moderation beginnt.
+- **Bearbeiten, Löschen, Reaktionen.** Eine bearbeitete Nachricht wird mit neuem Text gemeldet (eine bearbeitete Stimme zählt in ihrer letzten Fassung), eine weitergeleitete Nachricht als weitergeleitet markiert (sie ist nicht die Stimme der weiterleitenden Person), und Reaktionen werden mit der Person gemeldet, die sie gesetzt hat. Dafür fordert das Plugin selbst die Intents Guild Message Reactions und Direct Message Reactions an (nicht privilegiert).
+- **Wer da ist.** Mit dem Server-Members-Intent listet der Bot alle, die den Kanal sehen. Eine Abfrage, die omadia als frisch markiert, fragt Discord neu statt den Fünf-Minuten-Cache zu nehmen; ein Beitritt, Austritt oder Rollenwechsel verwirft den Cache. Vollständig (`complete`) ist die Liste nur, wenn Discord so viele Mitglieder geliefert hat, wie der Server hat; eine kürzere Liste ist `partial`, eine fehlgeschlagene `unknown`, jeweils mit Grund und Lesezeitpunkt.
+- **Beitritte und Austritte.** Mit dem Server-Members-Intent wird ein Beitritt oder Austritt im Server an omadia gemeldet, für die Kanäle dieses Servers, in denen der Bot gesehen wurde (ein Beitritt nur dort, wo die Person den Kanal sehen kann).
+- **Abstimmungen als Text.** Umfragen gehen als nummerierte Textfrage raus; man antwortet mit einer Antwort auf die Nachricht mit der Nummer, ohne den Bot zu erwähnen. omadia hält die offene Frage selbst, ein Neustart dazwischen ändert nichts. Der Facilitator kann eine Stimme mit 👍 bestätigen.
+
+**Was Discord nicht kann, und was stattdessen passiert:**
+
+| Anforderung | Lücke in Discord | Nächstliegendes Verhalten |
+| --- | --- | --- |
+| Native Umfragen | Eine Antwort in einer Discord-Umfrage trägt keine eigenen Daten, nur Position und Text. Eine Stimme der omadia-Option zuzuordnen braucht einen Datensatz, der einen Neustart überlebt; den führt dieses Plugin nicht. Eine Rangfolge kann eine Discord-Umfrage auch nicht abbilden. | Das Plugin meldet keine Umfragen an. omadia stellt jede Umfrage als nummerierten Text und liest getippte Antworten als Antwort; die offene Frage hält omadia selbst, also neustartfest. |
+| Nachrichten ohne Erwähnung lesen | Nur mit dem privilegierten Message-Content-Intent. | Ohne es sagt die Readiness das, und omadia lehnt das Abo mit diesem Grund ab, den der Facilitator im Chat nennen kann; der Bot hört dann nur Nachrichten, die ihn erwähnen (eine Antwort mit Ping zählt), und DMs. |
+| Wer im Kanal ist | Nur mit dem privilegierten Server-Members-Intent; Discord kennt keine Mitgliedschaft pro Kanal, nur Server-Mitglieder und Kanalrechte. | Ohne das Intent ist die Liste `unknown`. Server über 5.000 Mitglieder sind `partial`. |
+| Beitritt und Austritt | Nur serverweit (GUILD_MEMBER_ADD / REMOVE, Server-Members-Intent); Rechteänderungen erzeugen kein Ereignis. | Ereignisse gehen an die Kanäle, in denen der Bot seit seinem letzten Start gesehen wurde; eine Rechteänderung verwirft nur den Cache, die nächste Abfrage stimmt also. |
+| „Bot zum Kanal hinzugefügt" | Discord sendet dafür kein Ereignis pro Kanal. | Anwesenheit wird mit der ersten empfangenen Nachricht dort gemeldet. |
+| Löschen | Das Lösch-Ereignis von Discord nennt weder Autor noch die löschende Person. | Gemeldet wird nur eine Löschung einer Nachricht, die der Bot noch im Cache hatte (Autor bekannt); sonst wird sie nur protokolliert. |
+
 ## So funktioniert es in omadia
 
 Ein Channel-Plugin (`kind: channel`) für omadia core 1.79 oder neuer. Der omadia-Kernel aktiviert es aus der `manifest.yaml`, dann öffnet es die Discord-Gateway-Verbindung. Jede eingehende Nachricht geht an den Orchestrator-Chat-Agenten, und die Antwort kommt zurück nach Discord. Der Channel braucht zuerst einen dem Orchestrator zugewiesenen LLM-Provider, sonst gibt es keinen Agenten, der antworten kann.

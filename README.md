@@ -56,6 +56,29 @@ omadia can also write to you on its own initiative (a reminder, an escalation): 
 
 omadia answers in a group only when it knows who is in the channel. Discord sends the member list only to bots with the privileged **Server Members intent**: turn it on in the Developer Portal (Bot, Privileged Gateway Intents) and tick *Request server-members intent* in the plugin settings. Without it the roster of a server channel is "unknown" and the bot answers in direct messages only. Direct messages need no intent. Servers with more than 5,000 members are reported as partial, so omadia treats them as unknown too.
 
+## Facilitators (moderated groups)
+
+A facilitator agent (spec 2043) moderates a server channel or thread: it collects contributions and votes, keeps status and reminds people. In Discord it works like this:
+
+- **Its own bot.** A facilitator needs a bot of its own (see *One bot per agent* above). Two facilitators post as two distinct bots, also in two different channels.
+- **Every message, only where it moderates.** While a facilitation holds a message subscription for a channel, its bot hands every human message there to omadia (also the ones that do not mention it) and starts no answer of its own: the facilitation answers. In every other channel the mention rules stay. omadia asks the plugin first whether the bot can do this in that channel (readiness); the answer names what is missing: the **Message Content intent** (without it Discord withholds the text of messages that do not mention the bot), server channels switched off, a server that is not on the allowlist, or the permissions View Channel, Read Message History and Send Messages (in a thread: Send Messages in Threads).
+- **Presence.** omadia lets a facilitation listen in a channel only once the bot was seen there. The bot reports this with the first message it receives in a channel (and again every 12 hours), so somebody has to write there first, for example the message that starts the facilitation.
+- **Edits, deletions, reactions.** An edited message is reported with its new text (an edited ballot counts in its latest revision), a forwarded message is marked as forwarded (it is not the forwarder's ballot), and reactions are reported with who set them. This needs the intents Guild Message Reactions and Direct Message Reactions, which the plugin requests itself (they are not privileged).
+- **Who is there.** With the Server Members intent the bot lists everyone who can see the channel. A query omadia marks as fresh asks Discord again instead of using the five-minute cache, and a join, leave or role change drops the cache. The roster is `complete` only when Discord listed as many members as the server has; a shorter list is `partial`, a failed one `unknown`, both with the reason and the time of the read.
+- **Joins and leaves.** With the Server Members intent, a person who joins or leaves the server is reported to omadia for the channels of that server the bot was seen in (a join only where the person can see the channel).
+- **Votes as text.** Polls go out as a numbered text question; people answer by replying with the number, without mentioning the bot. omadia keeps the open question, so a restart in between changes nothing. The facilitator may confirm a ballot with a 👍.
+
+**What Discord cannot do, and the closest behaviour:**
+
+| Requirement | Gap in Discord | What happens instead |
+| --- | --- | --- |
+| Native polls | A Discord poll answer carries no data of its own, only its position and label. Matching a vote back to omadia's option needs a record that survives a restart, which this plugin does not keep; a Discord poll can also not express a ranked vote. | The plugin does not declare polls. omadia posts every poll as numbered text and reads typed replies as the answer; the open question is kept by omadia, so it is restart-safe. |
+| Reading unaddressed messages | Only with the privileged Message Content intent. | Without it the readiness report says so and omadia refuses the subscription with that reason, which the facilitator can say in the chat; the bot then hears only messages that mention it (a reply that pings it counts) and DMs. |
+| Who is in a channel | Only with the privileged Server Members intent; Discord has no membership per channel, only server members and channel permissions. | Without the intent the roster is `unknown`. Servers above 5,000 members are `partial`. |
+| Join and leave events | Only server-wide (GUILD_MEMBER_ADD / REMOVE, Server Members intent); permission changes give no event. | Events go to the channels the bot was seen in since its last start; a permission change only drops the roster cache, so the next roster query is right. |
+| "Bot added to channel" | Discord sends no such event for a channel. | Presence is reported on the first message the bot receives there. |
+| Deletions | Discord's delete event names neither the author nor who deleted. | A deletion is reported only for a message the bot still had in its cache (author known); otherwise it is logged and not reported. |
+
 ## How it works in omadia
 
 A channel plugin (`kind: channel`) for omadia core 1.79 or newer. The omadia kernel activates it from `manifest.yaml`, then it opens the Discord Gateway connection. Each inbound message goes to the orchestrator chat agent, and the response comes back to Discord. The channel needs an LLM provider assigned to the orchestrator first, otherwise there is no agent to answer.
