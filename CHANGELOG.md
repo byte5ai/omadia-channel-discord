@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+Native facilitators in Discord (byte5ai/omadia-channel-discord#6, spec 2043
+§5.3, §5.5, §6.4). All kernel calls are feature-detected; `compat.core` is
+unchanged.
+
+- **Readiness per bot and conversation**: the plugin registers a readiness
+  provider. A server channel is `ready` only with the Message Content intent,
+  server channels not switched off, the server on the allowlist (or none) and
+  View Channel, Read Message History and Send Messages (Send Messages in
+  Threads in a thread); each missing item is named. A DM is
+  `unsupported_conversation`, an unknown bot `no_identity`.
+- **Delivery per conversation**: where the kernel hands a bot every message
+  (`conversationDelivery` = `all`, or `isAllMessagesSubscribed` on an older
+  kernel) the bot emits every human message and starts no turn of its own;
+  elsewhere the mention rules stay.
+- **Presence**: the first group message per channel (and every 12 h) emits
+  `bot_present`, which the kernel needs before it subscribes a facilitator.
+- **Edits, deletions, reactions, forwards** as conversation events: `edited`
+  with the new text, `deleted` when the cached message names its author,
+  `reaction` added / removed (new non-privileged intents Guild Message
+  Reactions and Direct Message Reactions), `forwarded` on a forward.
+- **Membership**: server joins and leaves (Server Members intent) emit
+  `members_added` / `members_removed` for the channels the bot was seen in;
+  joins, leaves, role and channel changes drop the roster cache.
+- **Roster**: a member list shorter than the server's member count is
+  `partial`, never `complete`.
+- **No native polls** (decision in AGENTS.md): polls keep going out as
+  numbered text; the README lists each Discord gap and the closest behaviour.
+
 ## 0.4.0
 
 Bot reactions (spec 2043 §5.14, byte5ai/omadia#2061, ADR 0027). Needs the

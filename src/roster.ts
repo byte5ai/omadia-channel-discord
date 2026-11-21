@@ -19,8 +19,14 @@ import { DISCORD_CHANNEL_TYPE } from './renderer.js';
  *    privileged **Server Members** intent (otherwise Discord does not send us
  *    the member list at all) AND the server is small enough to list in one
  *    request; the roster is then everyone who can see the channel.
- *  - A very large server, or a member list that could not be read, is
- *    `partial` / `unknown` with the reason in `statusDetail`.
+ *  - A very large server, a member list that came back shorter than the
+ *    server's member count, or one that could not be read, is `partial` /
+ *    `unknown` with the reason in `statusDetail`. Never `complete` on doubt.
+ *
+ * `fresh: true` skips the cache and asks Discord now (`guild.members.fetch()`
+ * requests the whole list over the Gateway). The cache is also dropped when a
+ * member joins, leaves or changes roles (see {@link DiscordRosterProvider.invalidateAll}),
+ * so a join within the cache lifetime is seen by the next query either way.
  */
 
 /** Servers with more members than this are not listed in full (one fetch per refresh). */
@@ -45,6 +51,12 @@ export type RosterSource =
       readonly memberCount: number;
       /** Everyone who can see the channel, from a (fresh) member list. */
       readonly viewers: () => Promise<readonly RosterMember[]>;
+      /**
+       * How many server members the bot holds after `viewers()` ran. Fewer
+       * than `memberCount` = the list Discord sent was incomplete. Absent =
+       * not known (the roster is then complete only by `viewers()` succeeding).
+       */
+      readonly listedCount?: () => number;
     }
   | { readonly type: 'unreadable'; readonly detail: string };
 
@@ -122,6 +134,17 @@ export async function readRoster(
     };
   }
   const withSelf = dedupe([...viewers, self]);
+  const listed = source.listedCount?.();
+  if (listed !== undefined && listed < source.memberCount) {
+    return {
+      conversationType: 'group',
+      participants: withSelf.map(participantOf),
+      ...base,
+      partial: true,
+      status: 'partial',
+      statusDetail: `Discord listed ${String(listed)} of the server's ${String(source.memberCount)} members; who is missing is not known.`,
+    };
+  }
   if (source.memberCount > MAX_LISTED_MEMBERS) {
     return {
       conversationType: 'group',
@@ -184,6 +207,14 @@ export class DiscordRosterProvider implements ConversationRosterProvider {
     // Only a read that reached the platform is worth reusing.
     if (roster.status !== 'unknown') this.#cache.set(conversationId, { at: nowMs, roster });
     return roster;
+  }
+
+  /**
+   * Forget every cached roster: somebody joined, left or got other roles
+   * (who can see a channel changed), or a channel's permissions changed.
+   */
+  invalidateAll(): void {
+    this.#cache.clear();
   }
 
   /** `discord-app:<appId>` (the routing key) or the bot user id. */
