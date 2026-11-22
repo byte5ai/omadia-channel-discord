@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 Native facilitators in Discord (byte5ai/omadia-channel-discord#6, spec 2043
 §5.3, §5.5, §6.4). All kernel calls are feature-detected; `compat.core` is
