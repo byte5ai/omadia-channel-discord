@@ -103,9 +103,11 @@ export function localeOf(turn: IncomingTurn): 'de' | 'en' | undefined {
  * floor, the sender, the platform ids). Discord is not a context-memory channel
  * (`CONTEXT_MEMORY_CHANNEL_TYPES`), so the memory axes stay as before.
  */
-function originOf(turn: IncomingTurn, sessionScope: string, principal: string): TurnOrigin {
+function originOf(turn: IncomingTurn, sessionScope: string, principal: string): TurnOrigin & DmReplyOrigin {
   const typedPrincipal = parsePrincipal(principal);
-  const messageId = (turn.metadata as { messageId?: unknown } | undefined)?.messageId;
+  const metadata = turn.metadata as { messageId?: unknown; replyToMessageId?: unknown } | undefined;
+  const messageId = metadata?.messageId;
+  const replyTo = turn.conversationType === 'direct' ? metadata?.replyToMessageId : undefined;
   return {
     channelType: DISCORD_CHANNEL_TYPE,
     scope: parseSessionScope(sessionScope),
@@ -113,12 +115,24 @@ function originOf(turn: IncomingTurn, sessionScope: string, principal: string): 
     ...(turn.conversationType ? { conversationType: turn.conversationType } : {}),
     channelConversationId: turn.conversationId,
     ...(typeof messageId === 'string' ? { messageId } : {}),
+    ...(typeof replyTo === 'string' ? { replyToMessageId: replyTo } : {}),
     speaker: {
       kind: turn.userRef.kind,
       id: turn.userRef.id,
       ...(turn.userRef.displayName ? { displayName: turn.userRef.displayName } : {}),
     },
   };
+}
+
+/**
+ * Since channel-sdk 0.3.10 (omadia#2157): on a PRIVATE turn the id of the
+ * message the DM replies to, in the id format of `messageId` (and of the
+ * `messageId` this bot reports for its own sends), so a reply to a reminder
+ * DM matches the reminder. Declared here structurally until the SDK type
+ * carries it; an older kernel ignores the extra field.
+ */
+interface DmReplyOrigin {
+  readonly replyToMessageId?: string;
 }
 
 /** What the resolver decided for a turn. */
