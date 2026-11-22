@@ -125,7 +125,7 @@ function originOf(turn: IncomingTurn, sessionScope: string, principal: string): 
 }
 
 /**
- * Since channel-sdk 0.3.10 (omadia#2157): on a PRIVATE turn the id of the
+ * Since channel-sdk 0.3.11 (omadia#2157): on a PRIVATE turn the id of the
  * message the DM replies to, in the id format of `messageId` (and of the
  * `messageId` this bot reports for its own sends), so a reply to a reminder
  * DM matches the reminder. Declared here structurally until the SDK type
