@@ -27,6 +27,16 @@ unchanged.
   joins, leaves, role and channel changes drop the roster cache.
 - **Roster**: a member list shorter than the server's member count is
   `partial`, never `complete`.
+- **Only people count**: a message, edit, deletion or reaction by a bot, a
+  webhook (which can post under any display name) or a system message is
+  never a conversation event, and in a facilitated channel such a message is
+  dropped, also with *Ignore bots* off. Outside a facilitation a bot that
+  addresses the bot still starts its turn as before. A webhook is not named
+  as `addedBy` of `bot_present`.
+- **Replies to a DM**: a DM turn's origin carries `replyToMessageId` (since
+  channel-sdk 0.3.10, omadia#2157; an older kernel ignores it), the snowflake
+  of the message it replies to, the same id the bot reports as `messageId`
+  for its own sends, so a reply to a reminder DM matches the reminder.
 - **No native polls** (decision in AGENTS.md): polls keep going out as
   numbered text; the README lists each Discord gap and the closest behaviour.
 

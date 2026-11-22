@@ -10,6 +10,7 @@ import {
   InMemorySpeakerHistoryStore,
   type ConversationMembershipEvent,
   type ConversationMessageEvent,
+  type IncomingTurn,
 } from '@omadia/channel-sdk';
 import type { Message, MessageReaction, PartialMessage, User } from 'discord.js';
 
@@ -33,6 +34,9 @@ interface StubOptions {
   authorBot?: boolean;
   editedAt?: string | null;
   forwardOf?: string;
+  replyTo?: string;
+  webhookId?: string;
+  system?: boolean;
 }
 
 function stubMessage(o: StubOptions = {}): Message {
@@ -48,7 +52,9 @@ function stubMessage(o: StubOptions = {}): Message {
     content: o.content ?? '1) Pizza 2) Sushi',
     createdTimestamp: Date.parse('2026-11-21T10:00:00Z'),
     editedTimestamp: o.editedAt ? Date.parse(o.editedAt) : null,
-    reference: o.forwardOf ? { messageId: o.forwardOf, type: 1 } : null,
+    reference: o.forwardOf ? { messageId: o.forwardOf, type: 1 } : o.replyTo ? { messageId: o.replyTo, type: 0 } : null,
+    webhookId: o.webhookId ?? null,
+    system: o.system ?? false,
     mentions: {
       users: { has: (id: string) => o.mentionsBot === true && id === BOT },
       repliedUser: null,
@@ -128,6 +134,68 @@ describe('delivery per conversation', () => {
     });
     await receive(stubMessage({ mentionsBot: true }));
     assert.equal(seen.turns, 1);
+  });
+});
+
+describe('bots and webhooks with Ignore bots off', () => {
+  const listening = { guildPolicy: 'mention', allowDms: true, ignoreBots: false, allowlist: new Set<string>() } as const;
+  const WEBHOOK = { authorId: '600000000000000001', authorBot: true, webhookId: '600000000000000001' };
+
+  it('in a facilitated channel a webhook, a bot or a system message is no ballot: not handed over, no turn', async () => {
+    const { seen, receive } = connection({ policy: { ...listening, allowlist: new Set() } });
+    await receive(stubMessage({ id: 'w1', content: '1', ...WEBHOOK }));
+    await receive(stubMessage({ id: 'b1', content: '2', authorId: 'b-other', authorBot: true, mentionsBot: true }));
+    await receive(stubMessage({ id: 's1', content: 'Uli pinned a message', system: true }));
+    await receive(stubMessage({ id: 'h1', content: '1' }));
+    assert.deepEqual(seen.events.map((e) => e.messageId), ['h1']);
+    assert.equal(seen.turns, 0);
+  });
+
+  it('a webhook does not name the person who added the bot', async () => {
+    const { seen, receive } = connection({ policy: { ...listening, allowlist: new Set() } });
+    await receive(stubMessage({ ...WEBHOOK }));
+    assert.equal(seen.membership[0]?.kind, 'bot_present');
+    assert.equal(seen.membership[0]?.kind === 'bot_present' ? seen.membership[0].addedBy : 'x', undefined);
+  });
+
+  it('in a channel that is not facilitated a bot that mentions the bot still runs its turn, as before', async () => {
+    const { seen, receive } = connection({ policy: { ...listening, allowlist: new Set() } });
+    await receive(stubMessage({ channelId: ELSEWHERE, authorId: 'b-other', authorBot: true, mentionsBot: true }));
+    await receive(stubMessage({ channelId: ELSEWHERE, id: 'w2', mentionsBot: true, ...WEBHOOK }));
+    assert.equal(seen.turns, 2);
+    assert.deepEqual(seen.events, [], 'no conversation record of a non-person');
+  });
+
+  it('no event is built for a bot\'s or a webhook\'s message, edit, deletion or reaction', async () => {
+    const events: ConversationMessageEvent[] = [];
+    const l = new ConversationLifecycle({
+      channelId: 'c',
+      botKey: () => KEY,
+      botUserId: () => BOT,
+      policy: { hears: () => true },
+      emit: (e) => void events.push(e),
+      log: () => undefined,
+    });
+    assert.equal(buildCreatedEvent('c', KEY, BOT, stubMessage({ ...WEBHOOK }), '1'), undefined);
+    assert.equal(buildCreatedEvent('c', KEY, BOT, stubMessage({ authorBot: true }), '1'), undefined);
+    await l.edited(stubMessage({ content: 'a' }), stubMessage({ content: 'b', editedAt: '2026-11-21T10:05:00Z', ...WEBHOOK }));
+    l.deleted(stubMessage({ ...WEBHOOK }));
+    const reaction = { message: stubMessage({ id: 'm9' }), emoji: { name: '👍', id: null } } as unknown as MessageReaction;
+    await l.reaction(reaction, { id: 'b2', bot: true, partial: false, username: 'b' } as unknown as User, false);
+    assert.deepEqual(events, []);
+  });
+});
+
+describe('a reply', () => {
+  it('names the message it replies to in the event and in a DM turn', async () => {
+    const event = buildCreatedEvent('c', KEY, BOT, stubMessage({ replyTo: '800000000000000009' }), 'erledigt');
+    assert.equal(event?.replyToMessageId, '800000000000000009');
+    const seenTurns: IncomingTurn[] = [];
+    const { receive } = connection({
+      planTurn: (t) => (seenTurns.push(t), { run: async () => null }),
+    });
+    await receive(stubMessage({ guild: false, channelId: 'dm-1', replyTo: '800000000000000009' }));
+    assert.equal((seenTurns[0]?.metadata as { replyToMessageId?: string }).replyToMessageId, '800000000000000009');
   });
 });
 

@@ -34,6 +34,7 @@ import {
   buildSlashTurn,
   extractText,
   isDirectMessage,
+  isHumanAuthored,
   mentionsBot,
 } from './inbound.js';
 import { buildCreatedEvent, discordAuthor, discordBotChannelKey } from './conversationEvents.js';
@@ -306,8 +307,18 @@ export class DiscordConnection {
 
       const text = extractText(message, this.botUserId);
       // A facilitation reads every message here and drives every turn: the
-      // message is handed over, the bot starts no turn of its own.
+      // message is handed over, the bot starts no turn of its own. A bot's,
+      // a webhook's or a system message is no participant's contribution
+      // (with *Ignore bots* off as well): it is not handed over at all.
       if (!dm && this.deliveryOf(message.channelId) === 'all') {
+        if (!isHumanAuthored(message)) {
+          this.deps.log('info', 'discord message in a facilitated conversation dropped: no person wrote it', {
+            channel: message.channelId,
+            author: message.author.id,
+            webhook: message.webhookId !== null && message.webhookId !== undefined,
+          });
+          return;
+        }
         await this.reportCreated(message, text, false);
         return;
       }
@@ -389,7 +400,8 @@ export class DiscordConnection {
       message.channelId,
       message.guildId,
       discordAuthor(self),
-      discordAuthor(message.author),
+      // A webhook may post under any name: only a person is named as `addedBy`.
+      isHumanAuthored(message) ? discordAuthor(message.author) : undefined,
       new Date(message.createdTimestamp).toISOString(),
     );
   }

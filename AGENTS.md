@@ -50,7 +50,13 @@ server joins / leaves to the channels the bot was seen in. Under
 `conversationDelivery = all` the bot emits and starts no turn (the engine
 drives every turn, as in Teams); `addressed` / `none` keep the mention rules.
 Edits, deletions (only with a cached author, never guessed), reactions and
-forwards are conversation events (`src/lifecycleEvents.ts`).
+forwards are conversation events (`src/lifecycleEvents.ts`). Only a person
+is ever an event's author (`isHumanAuthored` in `src/inbound.ts`): a bot, a
+webhook (any display name it likes) or a system message yields no event, and
+in an `all` conversation such a message is dropped, also with `ignore_bots`
+off. The contract carries human messages only and has no bot marker, so
+dropping is the only option. Outside a facilitation `ignore_bots = false`
+still lets a bot that addresses the bot start a turn.
 
 Consequence: a facilitator in Discord needs its own bot with the Message
 Content intent (and Server Members for a roster); somebody has to write in a

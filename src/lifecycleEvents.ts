@@ -9,7 +9,8 @@ import { extractText } from './inbound.js';
  * Edits, deletions and reactions as conversation events (#2043 §5.3): an
  * edited ballot counts in its latest revision, a deleted one not at all, and
  * a reaction is what a person did, stated by Discord. Like a new message,
- * each is emitted for every human the bot may hear; the kernel keeps it only
+ * each is emitted for every human the bot may hear (never for a bot, a
+ * webhook or a system message, even with *Ignore bots* off); the kernel keeps it only
  * for a subscription of the receiving bot and drops it otherwise. No event
  * starts a turn.
  *
@@ -80,7 +81,15 @@ export class ConversationLifecycle {
       return;
     }
     if (!this.#hears(author, message)) return;
-    const ref = { id: message.id, channelId: message.channelId, guild: message.guild, channel: message.channel, author };
+    const ref = {
+      id: message.id,
+      channelId: message.channelId,
+      guild: message.guild,
+      channel: message.channel,
+      author,
+      webhookId: message.webhookId,
+      system: message.system,
+    };
     this.#emit(buildDeletedEvent(this.deps.channelId, this.deps.botKey(), ref, this.#nextRevision(message.id), this.#now()));
   }
 
