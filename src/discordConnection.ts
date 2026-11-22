@@ -6,11 +6,14 @@ import {
   Partials,
   PermissionFlagsBits,
   type ChatInputCommandInteraction,
+  type GuildMember,
   type Interaction,
   type Message,
+  type PartialGuildMember,
 } from 'discord.js';
 
 import type {
+  ConversationMembershipEvent,
   ConversationMessageEvent,
   IncomingTurn,
   LogLevel,
@@ -31,9 +34,13 @@ import {
   buildSlashTurn,
   extractText,
   isDirectMessage,
+  isHumanAuthored,
   mentionsBot,
 } from './inbound.js';
-import { buildCreatedEvent, discordBotChannelKey } from './conversationEvents.js';
+import { buildCreatedEvent, discordAuthor, discordBotChannelKey } from './conversationEvents.js';
+import { ConversationLifecycle } from './lifecycleEvents.js';
+import { BotPresence } from './presence.js';
+import type { ReadinessFacts } from './readiness.js';
 import { acknowledgeAs, MESSAGE_PACE, runPaced, SLASH_PACE } from './pace.js';
 import type { RosterMember, RosterSource } from './roster.js';
 import type { ProactiveChannel, SendPort } from './sendProviders.js';
@@ -93,6 +100,18 @@ export interface DiscordConnectionDeps {
   /** Timer seam for the pace behaviour (tests). */
   paceClock?: PaceClock;
   /**
+   * #2089 — what the kernel is handed of a conversation for this bot
+   * (`core.conversationDelivery`, else `all` where `isAllMessagesSubscribed`
+   * says so). `all`: a facilitation's process reads every human message and
+   * drives every turn, so the bot starts none of its own there. Absent or
+   * `addressed` / `none`: the mention rules apply as before.
+   */
+  conversationDelivery?: (conversationId: string, channelKey: string) => 'all' | 'addressed' | 'none';
+  /** `core.emitConversationEvent`: `bot_present` and server joins / leaves (#330, #2043). */
+  emitConversationEvent?: (event: ConversationMembershipEvent) => void;
+  /** Somebody joined, left or got other roles, or a channel's permissions changed: who sees what changed. */
+  onAudienceChanged?: () => void;
+  /**
    * Resolve the agent of ONE turn: its speaker is known up front, and `run()`
    * drives the orchestrator turn. `run()` yields the answer to render, or null
    * when the orchestrator emitted NO_REPLY (the connection then stays silent
@@ -133,12 +152,17 @@ export class DiscordConnection {
   private botUserId = '';
   private botKey = '';
   private intentionalClose = false;
+  private readonly presence: BotPresence;
+  private readonly lifecycle: ConversationLifecycle;
 
   constructor(private readonly deps: DiscordConnectionDeps) {
     const intents = [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.DirectMessages,
+      // People's reactions as conversation events (#2043); not privileged.
+      GatewayIntentBits.GuildMessageReactions,
+      GatewayIntentBits.DirectMessageReactions,
     ];
     if (deps.messageContentIntent) intents.push(GatewayIntentBits.MessageContent);
     if (deps.guildMembersIntent) intents.push(GatewayIntentBits.GuildMembers);
@@ -146,12 +170,37 @@ export class DiscordConnection {
     this.client = new Client({
       intents,
       // DM channels + their messages are uncached — without these partials the
-      // gateway never emits MessageCreate for direct messages.
-      partials: [Partials.Channel, Partials.Message],
+      // gateway never emits MessageCreate for direct messages. Reactions, users
+      // and members: so edits, deletions and reactions on uncached messages
+      // and a leave of an uncached member still arrive.
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User, Partials.GuildMember],
+    });
+
+    this.presence = new BotPresence({
+      channelId: deps.channelId,
+      ...(deps.emitConversationEvent ? { emit: deps.emitConversationEvent } : {}),
+      log: deps.log,
+    });
+    this.lifecycle = new ConversationLifecycle({
+      channelId: deps.channelId,
+      botKey: () => this.botKey,
+      botUserId: () => this.botUserId,
+      policy: { hears: (author, guildId, isDirect) => this.hears(author, guildId, isDirect) },
+      ...(deps.emitConversationMessage ? { emit: deps.emitConversationMessage } : {}),
+      log: deps.log,
     });
 
     this.client.once(Events.ClientReady, (c) => this.onReady(c));
     this.client.on(Events.MessageCreate, (m) => void this.onMessageCreate(m));
+    this.client.on(Events.MessageUpdate, (before, after) => void this.lifecycle.edited(before, after).catch((err: unknown) => this.logEventError('edit', err)));
+    this.client.on(Events.MessageDelete, (m) => this.lifecycle.deleted(m));
+    this.client.on(Events.MessageReactionAdd, (r, u) => void this.lifecycle.reaction(r, u, false).catch((err: unknown) => this.logEventError('reaction', err)));
+    this.client.on(Events.MessageReactionRemove, (r, u) => void this.lifecycle.reaction(r, u, true).catch((err: unknown) => this.logEventError('reaction', err)));
+    this.client.on(Events.GuildMemberAdd, (m) => this.onMemberChanged(m, 'added'));
+    this.client.on(Events.GuildMemberRemove, (m) => this.onMemberChanged(m, 'removed'));
+    this.client.on(Events.GuildMemberUpdate, () => this.deps.onAudienceChanged?.());
+    this.client.on(Events.ChannelUpdate, () => this.deps.onAudienceChanged?.());
+    this.client.on(Events.GuildRoleUpdate, () => this.deps.onAudienceChanged?.());
     this.client.on(Events.InteractionCreate, (i) => void this.onInteractionCreate(i));
     this.client.on(Events.Error, (err) => {
       this.deps.log('error', 'discord client error', { error: err.message });
@@ -254,7 +303,25 @@ export class DiscordConnection {
         return;
       }
 
+      if (!dm && message.guildId) this.observePresence(message);
+
       const text = extractText(message, this.botUserId);
+      // A facilitation reads every message here and drives every turn: the
+      // message is handed over, the bot starts no turn of its own. A bot's,
+      // a webhook's or a system message is no participant's contribution
+      // (with *Ignore bots* off as well): it is not handed over at all.
+      if (!dm && this.deliveryOf(message.channelId) === 'all') {
+        if (!isHumanAuthored(message)) {
+          this.deps.log('info', 'discord message in a facilitated conversation dropped: no person wrote it', {
+            channel: message.channelId,
+            author: message.author.id,
+            webhook: message.webhookId !== null && message.webhookId !== undefined,
+          });
+          return;
+        }
+        await this.reportCreated(message, text, false);
+        return;
+      }
       // Before the mention gate: a typed reply to a question need not mention the bot.
       const startsTurn = dm || this.deps.policy.guildPolicy === 'all' || mentionsBot(message, this.botUserId);
       const isAnswer = await this.reportCreated(message, text, startsTurn);
@@ -311,6 +378,66 @@ export class DiscordConnection {
         this.deliveryContext(message.channelId),
       ).catch(() => {});
     }
+  }
+
+  /** The kernel's delivery mode for this bot here; `none` on doubt, never `all` without a statement. */
+  private deliveryOf(conversationId: string): 'all' | 'addressed' | 'none' {
+    if (!this.deps.conversationDelivery || !this.botKey) return 'none';
+    try {
+      const mode = this.deps.conversationDelivery(conversationId, this.botKey);
+      return mode === 'all' || mode === 'addressed' ? mode : 'none';
+    } catch (err) {
+      this.deps.log('warn', 'discord delivery lookup failed', { error: (err as Error).message, channel: conversationId });
+      return 'none';
+    }
+  }
+
+  /** A group message reached this bot: tell the kernel the bot is in that conversation. */
+  private observePresence(message: Message): void {
+    const self = this.client.user;
+    if (!self || !message.guildId) return;
+    this.presence.observe(
+      message.channelId,
+      message.guildId,
+      discordAuthor(self),
+      // A webhook may post under any name: only a person is named as `addedBy`.
+      isHumanAuthored(message) ? discordAuthor(message.author) : undefined,
+      new Date(message.createdTimestamp).toISOString(),
+    );
+  }
+
+  /** A person joined or left a server: the roster cache is stale, and the observed conversations hear of it. */
+  private onMemberChanged(member: GuildMember | PartialGuildMember, change: 'added' | 'removed'): void {
+    try {
+      this.deps.onAudienceChanged?.();
+      if (member.user.bot) return;
+      const occurredAt = new Date().toISOString();
+      const visibleTo = (conversationId: string): boolean => {
+        if (change === 'removed') return true;
+        const channel = this.client.channels.cache.get(conversationId);
+        if (!channel || channel.isDMBased()) return false;
+        return channel.permissionsFor(member as GuildMember)?.has(PermissionFlagsBits.ViewChannel) === true;
+      };
+      this.presence.memberChanged(member.guild.id, discordAuthor(member.user), change, occurredAt, visibleTo);
+    } catch (err) {
+      this.logEventError('membership', err);
+    }
+  }
+
+  private logEventError(what: string, err: unknown): void {
+    this.deps.log('warn', `discord ${what} event not handled`, { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  /**
+   * May this bot hear `author` here: never itself or a sibling bot, other
+   * bots only without *Ignore bots*, DMs only when allowed, servers unless
+   * switched off, and only people (or servers) on the allowlist.
+   */
+  hears(author: { id: string; bot: boolean }, guildId: string | null, isDirect: boolean): boolean {
+    if (author.id === this.botUserId) return false;
+    if (author.bot && (this.deps.policy.ignoreBots || this.deps.isSiblingBot?.(author.id))) return false;
+    if (isDirect ? !this.deps.policy.allowDms : this.deps.policy.guildPolicy === 'off') return false;
+    return this.isAllowlisted(author.id, guildId);
   }
 
   /**
@@ -469,9 +596,41 @@ export class DiscordConnection {
       canListMembers: this.deps.guildMembersIntent,
       memberCount: guild.memberCount,
       viewers: async () => {
+        // Over the Gateway, never from the cache: a fresh query sees a join at once.
         await guild.members.fetch();
         return [...viewChannel.members.values()].map((m) => toRosterMember(m.user, m.displayName));
       },
+      listedCount: () => guild.members.cache.size,
+    };
+  }
+
+  /**
+   * What this bot can tell about moderating a conversation, for the
+   * readiness provider (`readiness.ts` turns it into the report).
+   */
+  async readinessFacts(conversationId: string): Promise<ReadinessFacts> {
+    const self = this.client.user;
+    if (!self || this.deps.state.status !== 'connected') {
+      return { kind: 'offline', detail: this.deps.state.lastError ?? `status ${this.deps.state.status}` };
+    }
+    let channel;
+    try {
+      channel = await this.client.channels.fetch(conversationId);
+    } catch {
+      return { kind: 'not_visible' };
+    }
+    if (!channel) return { kind: 'not_visible' };
+    if (channel.isDMBased()) return { kind: 'direct' };
+    const permissions = channel.permissionsFor(self);
+    const isThread = channel.isThread();
+    const has = (flag: bigint): boolean => permissions?.has(flag) === true;
+    return {
+      kind: 'guild_channel',
+      isThread,
+      canView: has(PermissionFlagsBits.ViewChannel),
+      canReadHistory: has(PermissionFlagsBits.ReadMessageHistory),
+      canSend: has(isThread ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages),
+      serverAllowlisted: this.deps.policy.allowlist.size === 0 || this.deps.policy.allowlist.has(channel.guildId),
     };
   }
 

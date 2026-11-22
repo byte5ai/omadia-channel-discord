@@ -1,4 +1,4 @@
-import { ChannelType, type Message } from 'discord.js';
+import { ChannelType, MessageReferenceType, type Message } from 'discord.js';
 
 import type { IncomingTurn } from '@omadia/channel-sdk';
 
@@ -30,10 +30,42 @@ export function mentionsBot(msg: Message, botUserId: string): boolean {
   return msg.mentions.users.has(botUserId);
 }
 
+/** The slice of a message that says whether a person wrote it. */
+export interface AuthoredLike {
+  author?: { bot?: boolean | null } | null;
+  webhookId?: string | null;
+  system?: boolean | null;
+}
+
+/**
+ * Did a person write this message? Not when a bot wrote it, not when a
+ * webhook posted it (a webhook picks any name and avatar it likes, so its
+ * display name proves nothing) and not for a system message (a join, a pin):
+ * none of these is a participant's contribution or ballot. An unknown author
+ * is no person either.
+ */
+export function isHumanAuthored(message: AuthoredLike): boolean {
+  if (!message.author || message.author.bot === true) return false;
+  if (message.webhookId) return false;
+  return message.system !== true;
+}
+
+/**
+ * The message a message replies to (Discord's `reference.messageId`), the
+ * same bare snowflake the bot reports as `messageId` of its own sends. A
+ * forward references the forwarded message but replies to nothing.
+ */
+export function replyTargetOf(msg: Pick<Message, 'reference'>): string | undefined {
+  const ref = msg.reference;
+  if (!ref || ref.type === MessageReferenceType.Forward) return undefined;
+  return ref.messageId ?? undefined;
+}
+
 /** Translate a native Discord message into the core `IncomingTurn` shape. */
 export function buildIncomingTurn(channelId: string, msg: Message, text: string): IncomingTurn {
   const dm = isDirectMessage(msg);
   const displayName = msg.author.globalName ?? msg.author.username;
+  const replyTo = replyTargetOf(msg);
   return {
     channelId,
     conversationId: msg.channelId,
@@ -51,6 +83,7 @@ export function buildIncomingTurn(channelId: string, msg: Message, text: string)
       guildId: msg.guildId ?? null,
       discordChannelId: msg.channelId,
       messageId: msg.id,
+      ...(replyTo ? { replyToMessageId: replyTo } : {}),
       // A message carries no language of its own; a server's preferred locale
       // is the best Discord states. A DM has none: omitted, not guessed.
       ...(msg.guild?.preferredLocale ? { locale: msg.guild.preferredLocale } : {}),

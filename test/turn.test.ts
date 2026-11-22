@@ -238,6 +238,24 @@ describe('hand-over to the kernel', () => {
     assert.deepEqual(input.origin?.principal, { kind: 'user', userId: 'discord-user:u1' });
   });
 
+  it('on a DM names the message it replies to (a reminder DM), in the id format of messageId', async () => {
+    const { agent, inputs } = fakeAgent();
+    await runTurn(
+      deps({}, agent),
+      turn('erledigt', { conversationType: 'direct', metadata: { messageId: 'm2', replyToMessageId: '800000000000000009' } }),
+    );
+    const origin = inputs[0]?.origin as { replyToMessageId?: string; messageId?: string } | undefined;
+    assert.equal(origin?.replyToMessageId, '800000000000000009');
+    assert.equal(origin?.messageId, 'm2');
+  });
+
+  it('names no reply target on a group turn, nor on a DM that replies to nothing', async () => {
+    const { agent, inputs } = fakeAgent();
+    await runTurn(deps({}, agent), turn('hallo', { metadata: { messageId: 'm1', replyToMessageId: 'm0' } }));
+    await runTurn(deps({}, agent), turn('hallo', { conversationType: 'direct', metadata: { messageId: 'm3' } }));
+    assert.deepEqual(inputs.map((i) => 'replyToMessageId' in (i.origin ?? {})), [false, false]);
+  });
+
   it('NO_REPLY stays silent', async () => {
     const silent = fakeAgent({ text: NO_REPLY_SENTINEL });
     assert.equal(await runTurn(deps({}, silent.agent), turn('hallo')), null);

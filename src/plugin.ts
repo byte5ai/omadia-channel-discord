@@ -16,6 +16,7 @@ import { createAdminRouter } from './adminRouter.js';
 import { PendingChoices } from './choices.js';
 import { DISCORD_CHANNEL_TYPE } from './renderer.js';
 import { DiscordConnection, type GuildResponsePolicy } from './discordConnection.js';
+import { createDiscordReadinessProvider } from './readiness.js';
 import { DiscordRosterProvider } from './roster.js';
 import {
   createDiscordConversationSendProvider,
@@ -72,6 +73,9 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   const speakerHistory = new InMemorySpeakerHistoryStore();
   const log = (level: LogLevel, message: string, context?: Record<string, unknown>) => core.log(level, message, context);
   const policy = { guildPolicy, allowDms, ignoreBots, allowlist };
+  // #2089 — how much of a conversation a bot hands over: the kernel's answer,
+  // or on a kernel before it `all` exactly where it subscribed every message.
+  const conversationDelivery = deliveryLookup(core);
   // Every bot of the installation (shared and agent bots), read when a message
   // arrives: `fleet` exists by then.
   const isOwnBot = (userId: string): boolean => own.conn.self()?.id === userId || fleet.isAgentBotUser(userId);
@@ -116,6 +120,12 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
       ...(core.reportConversationMessage
         ? { reportConversationMessage: (event) => core.reportConversationMessage?.(event) ?? Promise.resolve({ answeredCard: false }) }
         : {}),
+      ...(conversationDelivery ? { conversationDelivery } : {}),
+      ...(core.emitConversationEvent
+        ? { emitConversationEvent: (event) => core.emitConversationEvent?.({ ...event, channelId }) }
+        : {}),
+      // `roster` is built below; the Gateway delivers no event before `start()`.
+      onAudienceChanged: () => roster.invalidateAll(),
       planTurn: (turn) => planTurn(turnDeps, turn),
       ...(agentBot ? { agentBot: true } : {}),
     });
@@ -133,8 +143,9 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
       self: () => connection.self(),
       channelKey: () => connection.channelKey(),
     });
+    const readiness = { readinessFacts: (conversationId: string) => connection.readinessFacts(conversationId) };
     connection.start();
-    return { conn: connection, state: botState, sendDeps, roster };
+    return { conn: connection, state: botState, sendDeps, roster, readiness };
   };
 
   const own = connectBot(token, false);
@@ -143,6 +154,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
     channelKey: () => conn.channelKey(),
     sendDeps: own.sendDeps,
     roster: own.roster,
+    readiness: own.readiness,
     token,
   });
 
@@ -150,6 +162,16 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   // audience floor needs it to answer in a group (fail-closed without it).
   // Feature-detected: older kernels have no roster registry.
   core.registerRosterProvider?.(channelId, fleet.rosterProvider());
+
+  // Can a facilitator's bot read every message of a conversation (#2043)?
+  // The kernel subscribes a process to all messages only on `ready`.
+  core.registerReadinessProvider?.(
+    channelId,
+    createDiscordReadinessProvider((key) => fleet.readinessFor(key), {
+      messageContentIntent,
+      guildsSwitchedOff: guildPolicy === 'off',
+    }),
+  );
 
   // Status / invite admin UI. web-ui renders this as an iframe (manifest
   // `admin_ui_path`); the UI fetches its JSON API with RELATIVE paths so it
@@ -195,6 +217,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
           name: app.name,
           sendDeps: bot.sendDeps,
           roster: bot.roster,
+          readiness: bot.readiness,
           canSee: (conversationId) => bot.conn.canSee(conversationId),
           status: () => (bot.state.status === 'connected' ? 'connected' : bot.state.status === 'error' ? 'error' : 'connecting'),
           close: () => bot.conn.close(),
@@ -231,6 +254,20 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
       await conn.close();
     },
   };
+}
+
+type DeliveryLookup = (conversationId: string, channelKey: string) => 'all' | 'addressed' | 'none';
+
+/** The kernel's per-bot delivery mode, feature-detected; undefined on a kernel without subscriptions. */
+function deliveryLookup(core: CoreApi): DeliveryLookup | undefined {
+  if (typeof core.conversationDelivery === 'function') {
+    return (conversationId, channelKey) => core.conversationDelivery?.(DISCORD_CHANNEL_TYPE, conversationId, channelKey) ?? 'none';
+  }
+  if (typeof core.isAllMessagesSubscribed === 'function') {
+    return (conversationId, channelKey) =>
+      core.isAllMessagesSubscribed?.(DISCORD_CHANNEL_TYPE, conversationId, channelKey) === true ? 'all' : 'none';
+  }
+  return undefined;
 }
 
 /** Validate the guild-response policy enum, defaulting to 'mention'. */

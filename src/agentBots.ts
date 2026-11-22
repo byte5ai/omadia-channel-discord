@@ -27,6 +27,7 @@ import type {
 } from '@omadia/channel-sdk';
 
 import { discordBotChannelKey } from './conversationEvents.js';
+import type { ReadinessSource } from './readiness.js';
 import { DISCORD_CHANNEL_TYPE } from './renderer.js';
 import type { SendProviderDeps } from './sendProviders.js';
 
@@ -58,6 +59,8 @@ export interface DiscordBotRuntime {
   readonly name: string;
   readonly sendDeps: SendProviderDeps;
   readonly roster: ConversationRosterProvider;
+  /** What the bot can tell about moderating a conversation (#2043). Absent = never ready. */
+  readonly readiness?: ReadinessSource;
   /** Can the bot see this channel (it is on the server, has access)? */
   canSee(conversationId: string): Promise<boolean>;
   /** `connected` once the Gateway said ready. */
@@ -72,6 +75,7 @@ export interface DiscordDefaultBot {
   channelKey(): string | undefined;
   readonly sendDeps: SendProviderDeps;
   readonly roster: ConversationRosterProvider;
+  readonly readiness?: ReadinessSource;
   /** The token of the installation's own bot, to refuse it as an agent bot. */
   readonly token: string;
 }
@@ -148,6 +152,13 @@ export class DiscordBotFleet {
   sendDepsFor(asChannelKey: string | undefined): SendProviderDeps | undefined {
     if (this.isDefaultKey(asChannelKey)) return this.defaultBot.sendDeps;
     return this.agentBots.get(asChannelKey as string)?.sendDeps;
+  }
+
+  /** The readiness of exactly the bot `asChannelKey` names; undefined when no such bot runs here. */
+  readinessFor(asChannelKey: string): ReadinessSource | undefined {
+    const key = asChannelKey.trim().toLowerCase();
+    if (key !== '' && key === this.defaultBot.channelKey()) return this.defaultBot.readiness;
+    return this.agentBots.get(key)?.readiness;
   }
 
   /** The roster as the bot `asChannelKey` sees it; no key = the installation's own bot. */

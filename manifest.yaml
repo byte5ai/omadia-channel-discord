@@ -71,9 +71,11 @@ setup:
       2. Paste this value below as **Discord Bot Token**. It is stored encrypted
          in the vault and **shown only once** — if lost, just "Reset Token" again.
 
-      ### 3. Intents (only for "Respond to every message" and server channels)
+      ### 3. Intents (only for "Respond to every message", facilitators and server channels)
       The default (DMs + @mention) needs **no** privileged intent. Only if you set
-      *Behaviour in servers* to **Respond to every message**:
+      *Behaviour in servers* to **Respond to every message**, or a facilitator
+      agent should moderate a server channel (it has to read messages that do
+      not mention it):
       - Bot tab → **Privileged Gateway Intents** → enable **Message Content Intent** → **Save**.
 
       **Server channels (groups):** omadia answers in a group only when it knows
@@ -118,9 +120,11 @@ setup:
          verschlüsselt im Vault gespeichert und **nur einmal angezeigt** — bei
          Verlust einfach erneut „Reset Token".
 
-      ### 3. Intents (nur bei „Auf jede Nachricht" und Server-Kanälen)
+      ### 3. Intents (nur bei „Auf jede Nachricht", Facilitatoren und Server-Kanälen)
       Standard (DMs + @Erwähnung) braucht **kein** privilegiertes Intent. Nur wenn
-      du *Verhalten in Servern* auf **Auf jede Nachricht** stellst:
+      du *Verhalten in Servern* auf **Auf jede Nachricht** stellst, oder wenn ein
+      Facilitator-Agent einen Server-Kanal moderieren soll (er muss Nachrichten
+      ohne Erwähnung lesen):
       - Bot-Tab → **Privileged Gateway Intents** → **Message Content Intent** aktivieren → **Save**.
 
       **Server-Kanäle (Gruppen):** omadia antwortet in einer Gruppe nur, wenn es
@@ -179,7 +183,7 @@ setup:
     - key: "message_content_intent"
       type: "boolean"
       label: "Message-Content-Intent anfordern"
-      help: "NUR nötig für 'Auf jede Nachricht'. Fordert das privilegierte Message-Content-Intent an — das musst du im Developer Portal → Bot → 'Privileged Gateway Intents' separat aktivieren, sonst schlägt der Login fehl. Für DMs und @Erwähnungen NICHT nötig."
+      help: "Nötig für 'Auf jede Nachricht' und damit ein Facilitator-Agent einen Server-Kanal moderieren kann (er liest dann auch Nachrichten ohne Erwähnung). Fordert das privilegierte Message-Content-Intent an — das musst du im Developer Portal → Bot → 'Privileged Gateway Intents' separat aktivieren, sonst schlägt der Login fehl. Für DMs und @Erwähnungen NICHT nötig."
       required: false
       default: false
 
