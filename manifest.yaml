@@ -279,6 +279,10 @@ optional_requires:
   # (triggers, routines) and deliveries go out through the bot they were set
   # on. Absent = agents set no triggers here.
   - "routinesIntegration@1"
+  # Kernel-side (middleware/src/index.ts), never provided by a plugin: a
+  # server-channel turn installs its participants in the turn context, so the
+  # audience floor knows who is in the room (spec 2043, discord#6).
+  - "turnContext@1"
 provides: []
 
 # Generic admin-UI iframe surface (rendered by web-ui for any plugin that

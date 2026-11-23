@@ -54,7 +54,7 @@ omadia kann dich auch von sich aus anschreiben (eine Erinnerung, eine Eskalation
 
 ## Server-Kanäle (Gruppen)
 
-omadia antwortet in einer Gruppe nur, wenn es weiß, wer im Kanal ist. Discord liefert die Mitgliederliste nur an Bots mit dem privilegierten **Server-Members-Intent**: im Developer Portal aktivieren (Bot, Privileged Gateway Intents) und in den Plugin-Einstellungen *Server-Mitglieder-Intent anfordern* anhaken. Ohne ihn ist die Teilnehmerliste eines Server-Kanals „unbekannt", und der Bot antwortet nur in Direktnachrichten. Direktnachrichten brauchen kein Intent. Server mit mehr als 5.000 Mitgliedern gelten als teilweise bekannt, omadia behandelt sie also ebenfalls als unbekannt.
+omadia antwortet in einer Gruppe nur, wenn es weiß, wer im Kanal ist. Discord liefert die Mitgliederliste nur an Bots mit dem privilegierten **Server-Members-Intent**: im Developer Portal aktivieren (Bot, Privileged Gateway Intents) und in den Plugin-Einstellungen *Server-Mitglieder-Intent anfordern* anhaken. Ohne ihn ist die Teilnehmerliste eines Server-Kanals „unbekannt", und der Bot antwortet nur in Direktnachrichten. Direktnachrichten brauchen kein Intent. Server mit mehr als 5.000 Mitgliedern gelten als teilweise bekannt, omadia behandelt sie also ebenfalls als unbekannt. Jeder Zug in einem Server-Kanal gibt omadia diese Liste (die Menschen, nicht die Bots) als Publikum des Raums mit: omadia erlaubt ein Tool nur, wenn alle im Raum es nutzen dürfen. Ohne vollständige Liste darf ein Gruppen-Zug also kein Tool nutzen, auch keinen Facilitator-Start.
 
 ## Facilitatoren (moderierte Gruppen)
 
