@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4
+
+No "On it. This will take a moment." below a result (byte5ai/omadia-channel-discord#6, live run). A facilitator's turn posts its handshake and the vote through the bot itself; the acknowledgement, due after 8 seconds of work, then came after them. The bot now notes when it last posted into a channel (from Discord's echo of its own messages) and leaves the acknowledgement out once it has posted there since the turn began.
+
 ## 0.5.3
 
 A server's member list survives Discord's rate limit (byte5ai/omadia-channel-discord#6, live run). Discord allows the gateway request for a server's whole member list (opcode 8) only now and then per server. The turn's audience and a facilitation's fresh read came seconds apart, the second request was refused, the roster came back `unknown` and the facilitation ran on an open list ("die Mitgliederliste konnte ich nicht vollständig abrufen"). Now the bot's member cache is the list once it holds as many members as the server has: the Server Members intent keeps it current on every join and leave. Discord is asked only when the cache is short, and a refused request is waited out once (up to 35 s) before the roster is reported `unknown`.
