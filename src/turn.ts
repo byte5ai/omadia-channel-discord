@@ -15,6 +15,7 @@ import {
   type TurnOrigin,
 } from '@omadia/channel-sdk';
 
+import type { ChatParticipantsProvider } from './audience.js';
 import { choiceOptionsOf, type PendingChoices } from './choices.js';
 import { noticeAnswer, systemAnswer } from './delivery.js';
 import { DISCORD_CHANNEL_TYPE } from './renderer.js';
@@ -62,6 +63,16 @@ export interface TurnDeps {
    * (through this bot). Absent = the kernel publishes no routines.
    */
   routineTurn?: DiscordRoutineTurn;
+  /**
+   * Who is in a server channel, for the kernel's audience floor (spec 2043,
+   * discord#6): a group turn runs inside `runWith(participants(channel))`, the
+   * kernel's `turnContext.runWithChatParticipants`. Absent (a kernel without
+   * the turn context) = group turns carry no audience, as before.
+   */
+  audience?: {
+    participants: (conversationId: string) => ChatParticipantsProvider;
+    runWith: <T>(participants: ChatParticipantsProvider, fn: () => Promise<T>) => Promise<T>;
+  };
 }
 
 /** A turn whose agent is resolved but which has not run yet. */
@@ -235,9 +246,14 @@ export function planTurn(deps: TurnDeps, turn: IncomingTurn): PlannedTurn {
         });
       // The routines scope wraps the whole turn: who asks, and where a
       // trigger or routine the agent sets now delivers later.
-      const answer = await (deps.routineTurn
-        ? deps.routineTurn({ userId: turn.userRef.id, conversationId: turn.conversationId })(chat)
-        : chat());
+      const withRoutines = (): Promise<SemanticAnswer> =>
+        deps.routineTurn
+          ? deps.routineTurn({ userId: turn.userRef.id, conversationId: turn.conversationId })(chat)
+          : chat();
+      // A direct message is a one-reader room the kernel resolves itself.
+      const answer = await (deps.audience && turn.conversationType !== 'direct'
+        ? deps.audience.runWith(deps.audience.participants(turn.conversationId), withRoutines)
+        : withRoutines());
       if (isNoReply(answer)) {
         logNoReplyDrop(turn.channelId, { conversationId: turn.conversationId });
         return null;

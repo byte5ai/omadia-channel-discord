@@ -54,7 +54,7 @@ omadia can also write to you on its own initiative (a reminder, an escalation): 
 
 ## Server channels (groups)
 
-omadia answers in a group only when it knows who is in the channel. Discord sends the member list only to bots with the privileged **Server Members intent**: turn it on in the Developer Portal (Bot, Privileged Gateway Intents) and tick *Request server-members intent* in the plugin settings. Without it the roster of a server channel is "unknown" and the bot answers in direct messages only. Direct messages need no intent. Servers with more than 5,000 members are reported as partial, so omadia treats them as unknown too.
+omadia answers in a group only when it knows who is in the channel. Discord sends the member list only to bots with the privileged **Server Members intent**: turn it on in the Developer Portal (Bot, Privileged Gateway Intents) and tick *Request server-members intent* in the plugin settings. Without it the roster of a server channel is "unknown" and the bot answers in direct messages only. Direct messages need no intent. Servers with more than 5,000 members are reported as partial, so omadia treats them as unknown too. Every turn in a server channel hands omadia this list (the people, not the bots) as the room's audience: omadia allows a tool only when everyone in the room may use it, so without a complete list a group turn may use no tool at all, starting a facilitation included.
 
 ## Facilitators (moderated groups)
 

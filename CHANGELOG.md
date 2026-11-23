@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2
+
+A turn in a server channel now tells omadia who is in the channel (byte5ai/omadia-channel-discord#6, spec 2043). omadia's audience floor allows a tool only when everyone present may use it and reads the room from the turn; Discord did not hand it over, so every tool of a group turn was refused, among them the start of a facilitation ("this channel does not tell omadia who is in the conversation"). The bot now runs each server-channel turn with the people of its roster (complete rosters only, bots left out); a partial or unknown roster stays an unknown room. Needs the kernel's `turnContext@1`, declared as an optional requirement.
+
 ## 0.5.1
 
 User-visible texts no longer say "Orchestrator" (spec 2042 §6 criterion 12, `docs/terminology.md`): the manifest description, the package description, the README and the admin page now speak of your agents and the agent runtime.

@@ -17,6 +17,7 @@ import { PendingChoices } from './choices.js';
 import { DISCORD_CHANNEL_TYPE } from './renderer.js';
 import { DiscordConnection, type GuildResponsePolicy } from './discordConnection.js';
 import { createDiscordReadinessProvider } from './readiness.js';
+import { chatParticipantsOf, type TurnContextModule } from './audience.js';
 import { DiscordRosterProvider } from './roster.js';
 import {
   createDiscordConversationSendProvider,
@@ -69,6 +70,11 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   // with a database. Absent = agents cannot set triggers or routines here.
   const routines = ctx.services.get<RoutinesIntegration>(ROUTINES_INTEGRATION_SERVICE);
 
+  // The kernel's turn context (same AsyncLocalStorage as the orchestrator):
+  // a server-channel turn installs its participants there for the audience
+  // floor. Absent on an older kernel: group turns then carry no audience.
+  const turnContext = ctx.services.get<TurnContextModule>('turnContext');
+
   const state = createChannelState();
   const speakerHistory = new InMemorySpeakerHistoryStore();
   const log = (level: LogLevel, message: string, context?: Record<string, unknown>) => core.log(level, message, context);
@@ -98,6 +104,18 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
       // A trigger or routine the agent sets here delivers through this bot.
       ...(routines
         ? { routineTurn: createDiscordRoutineTurn(routines, channelId, () => (agentBot ? conn?.channelKey() : undefined)) }
+        : {}),
+      // The room of a group turn as THIS bot sees it (`roster` is built below,
+      // before the Gateway delivers a turn).
+      ...(turnContext
+        ? {
+            audience: {
+              participants: (conversationId: string) =>
+                chatParticipantsOf((id) => roster.getRoster(id), conversationId),
+              runWith: <T>(participants: Parameters<TurnContextModule['runWithChatParticipants']>[0], fn: () => Promise<T>) =>
+                turnContext.runWithChatParticipants(participants, fn),
+            },
+          }
         : {}),
     };
     const botState = agentBot ? createChannelState() : state;
