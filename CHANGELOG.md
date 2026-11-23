@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3
+
+A server's member list survives Discord's rate limit (byte5ai/omadia-channel-discord#6, live run). Discord allows the gateway request for a server's whole member list (opcode 8) only now and then per server. The turn's audience and a facilitation's fresh read came seconds apart, the second request was refused, the roster came back `unknown` and the facilitation ran on an open list ("die Mitgliederliste konnte ich nicht vollständig abrufen"). Now the bot's member cache is the list once it holds as many members as the server has: the Server Members intent keeps it current on every join and leave. Discord is asked only when the cache is short, and a refused request is waited out once (up to 35 s) before the roster is reported `unknown`.
+
 ## 0.5.2
 
 A turn in a server channel now tells omadia who is in the channel (byte5ai/omadia-channel-discord#6, spec 2043). omadia's audience floor allows a tool only when everyone present may use it and reads the room from the turn; Discord did not hand it over, so every tool of a group turn was refused, among them the start of a facilitation ("this channel does not tell omadia who is in the conversation"). The bot now runs each server-channel turn with the people of its roster (complete rosters only, bots left out); a partial or unknown roster stays an unknown room. Needs the kernel's `turnContext@1`, declared as an optional requirement.
