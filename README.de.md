@@ -4,7 +4,7 @@
 
 ### Sprich mit deinen omadia-Agenten aus Discord.
 
-Ein signiertes omadia-Plugin, das einen Discord-Bot mit deinem Agenten-Team verbindet. Es leitet Direktnachrichten, Server-Erwähnungen und einen Slash-Befehl an den omadia-Orchestrator weiter und postet die Antwort im selben Thread zurück.
+Ein signiertes omadia-Plugin, das einen Discord-Bot mit deinem Agenten-Team verbindet. Es leitet Direktnachrichten, Server-Erwähnungen und einen Slash-Befehl an deine Agenten weiter und postet die Antwort im selben Thread zurück.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Built for omadia](https://img.shields.io/badge/built%20for-omadia-2496ED.svg)](https://github.com/byte5ai/omadia)
@@ -82,13 +82,13 @@ Ein Facilitator-Agent (Spec 2043) moderiert einen Server-Kanal oder Thread: er s
 
 ## So funktioniert es in omadia
 
-Ein Channel-Plugin (`kind: channel`) für omadia core 1.79 oder neuer. Der omadia-Kernel aktiviert es aus der `manifest.yaml`, dann öffnet es die Discord-Gateway-Verbindung. Jede eingehende Nachricht geht an den Orchestrator-Chat-Agenten, und die Antwort kommt zurück nach Discord. Der Channel braucht zuerst einen dem Orchestrator zugewiesenen LLM-Provider, sonst gibt es keinen Agenten, der antworten kann.
+Ein Channel-Plugin (`kind: channel`) für omadia core 1.79 oder neuer. Der omadia-Kernel aktiviert es aus der `manifest.yaml`, dann öffnet es die Discord-Gateway-Verbindung. Jede eingehende Nachricht geht an die Agent-Runtime, und die Antwort kommt zurück nach Discord. Der Channel braucht zuerst ein der Agent-Runtime zugewiesenes Modell, sonst gibt es keinen Agenten, der antworten kann.
 
 ## Installation
 
 1. Installiere über den [Plugin-Hub](https://hub.omadia.ai) in der omadia-Admin-UI.
 2. Öffne die Plugin-Setup-Seite und fülle die Felder unten aus. Es gibt keinen API-Key: der Channel nutzt die Setup-Tokens.
-3. Weise dem Orchestrator zuerst einen LLM-Provider zu, sonst hat der Channel keinen Agenten zum Antworten.
+3. Weise der Agent-Runtime zuerst ein Modell zu, sonst hat der Channel keinen Agenten zum Antworten.
 
 ## Konfiguration
 
