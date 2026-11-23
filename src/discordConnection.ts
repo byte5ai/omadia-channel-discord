@@ -41,7 +41,7 @@ import { buildCreatedEvent, discordAuthor, discordBotChannelKey } from './conver
 import { ConversationLifecycle } from './lifecycleEvents.js';
 import { BotPresence } from './presence.js';
 import type { ReadinessFacts } from './readiness.js';
-import { acknowledgeAs, MESSAGE_PACE, runPaced, SLASH_PACE } from './pace.js';
+import { acknowledgeAs, acknowledgeUnlessPosted, MESSAGE_PACE, OwnPosts, runPaced, SLASH_PACE } from './pace.js';
 import { guildMembersOf, type RosterMember, type RosterSource } from './roster.js';
 import type { ProactiveChannel, SendPort } from './sendProviders.js';
 import type { PlannedTurn } from './turn.js';
@@ -151,6 +151,8 @@ export class DiscordConnection {
   private readonly client: Client;
   private botUserId = '';
   private botKey = '';
+  /** When this bot last posted into each channel (gateway echo of its own messages). */
+  private readonly ownPosts = new OwnPosts();
   private intentionalClose = false;
   private readonly presence: BotPresence;
   private readonly lifecycle: ConversationLifecycle;
@@ -279,8 +281,11 @@ export class DiscordConnection {
         }
       }
 
-      // Never react to our own messages (loop guard).
-      if (message.author.id === this.botUserId) return;
+      // Never react to our own messages (loop guard); only note when we posted.
+      if (message.author.id === this.botUserId) {
+        this.ownPosts.record(message.channelId, message.createdTimestamp);
+        return;
+      }
       if (this.deps.policy.ignoreBots && message.author.bot) return;
       if (message.author.bot && this.deps.isSiblingBot?.(message.author.id)) return;
 
@@ -355,12 +360,16 @@ export class DiscordConnection {
       const turn = buildIncomingTurn(this.deps.channelId, message, text);
       const ctx = this.deliveryContext(message.channelId);
       const planned = this.deps.planTurn(turn);
+      const turnStartedAt = Date.now();
       const paced = await runPaced(
         () => planned.run(),
         MESSAGE_PACE,
         {
           typing: () => this.sendTyping(message),
-          acknowledge: acknowledgeAs(planned.speaker, (answer) => deliverToMessage(message, answer, ctx)),
+          acknowledge: acknowledgeUnlessPosted(
+            () => this.ownPosts.since(message.channelId, turnStartedAt),
+            acknowledgeAs(planned.speaker, (answer) => deliverToMessage(message, answer, ctx)),
+          ),
         },
         this.paceOptions(turn),
       );

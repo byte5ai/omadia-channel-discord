@@ -103,3 +103,35 @@ export async function runPaced<T>(
     deliverAsFollowUp: outcome.deliverAsFollowUp,
   };
 }
+
+/**
+ * When this bot last posted into each conversation (from the gateway's echo of
+ * its own messages). A facilitator's turn posts through the bot itself (the
+ * handshake, a vote); an acknowledgement after that would announce work that
+ * was already shown (discord#6 live run).
+ */
+export class OwnPosts {
+  readonly #lastAt = new Map<string, number>();
+
+  record(conversationId: string, at: number): void {
+    const previous = this.#lastAt.get(conversationId);
+    if (previous === undefined || at > previous) this.#lastAt.set(conversationId, at);
+  }
+
+  /** Did the bot post into the conversation at or after `sinceMs`? */
+  since(conversationId: string, sinceMs: number): boolean {
+    const at = this.#lastAt.get(conversationId);
+    return at !== undefined && at >= sinceMs;
+  }
+}
+
+/** The acknowledgement, left out once the bot has posted in the conversation during the turn. */
+export function acknowledgeUnlessPosted(
+  hasPosted: () => boolean,
+  acknowledge: PaceTarget['acknowledge'],
+): PaceTarget['acknowledge'] {
+  return async (text) => {
+    if (hasPosted()) return;
+    await acknowledge(text);
+  };
+}
