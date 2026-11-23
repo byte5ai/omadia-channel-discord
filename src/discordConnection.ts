@@ -42,7 +42,7 @@ import { ConversationLifecycle } from './lifecycleEvents.js';
 import { BotPresence } from './presence.js';
 import type { ReadinessFacts } from './readiness.js';
 import { acknowledgeAs, MESSAGE_PACE, runPaced, SLASH_PACE } from './pace.js';
-import type { RosterMember, RosterSource } from './roster.js';
+import { guildMembersOf, type RosterMember, type RosterSource } from './roster.js';
 import type { ProactiveChannel, SendPort } from './sendProviders.js';
 import type { PlannedTurn } from './turn.js';
 import {
@@ -596,8 +596,9 @@ export class DiscordConnection {
       canListMembers: this.deps.guildMembersIntent,
       memberCount: guild.memberCount,
       viewers: async () => {
-        // Over the Gateway, never from the cache: a fresh query sees a join at once.
-        await guild.members.fetch();
+        // The cache is the list once it holds every member (the intent keeps
+        // it current on joins and leaves); else the gateway, rate limit aware.
+        await guildMembersOf(guild.members, () => guild.memberCount);
         return [...viewChannel.members.values()].map((m) => toRosterMember(m.user, m.displayName));
       },
       listedCount: () => guild.members.cache.size,

@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 
 import { rosterStatusOf } from '@omadia/channel-sdk';
 
-import { DiscordRosterProvider, MAX_LISTED_MEMBERS, readRoster, type RosterMember, type RosterSource } from '../src/roster.js';
+import { DiscordRosterProvider, MAX_LISTED_MEMBERS, readRoster, type RosterMember, type RosterSource, guildMembersOf } from '../src/roster.js';
 
 const BOT: RosterMember = { id: 'bot', username: 'omadia', isBot: true };
 const ULI: RosterMember = { id: 'u1', username: 'uli', displayName: 'Uli', isBot: false };
@@ -135,5 +135,50 @@ describe('roster', () => {
   it('a conversation the bot cannot see has no roster', async () => {
     const provider = new DiscordRosterProvider({ describe: async () => undefined, self: () => BOT });
     assert.equal(await provider.getRoster('gone'), undefined);
+  });
+});
+
+// discord#6 live run: Discord rate-limits the gateway's Request Guild Members
+// (opcode 8) per server. A fresh roster read right after another one (the
+// turn's audience, then the facilitation engine's fresh read) got the limit,
+// the roster came back `unknown` and the facilitation ran on an open list.
+describe('the member list of a server under the gateway rate limit', () => {
+  const limited = (retryAfter: number) => Object.assign(new Error('Request with opcode 8 was rate limited.'), { data: { retry_after: retryAfter } });
+
+  it('a member cache that holds every member is the list: no gateway request', async () => {
+    let fetched = 0;
+    const members = await guildMembersOf({ cache: { size: 3 }, fetch: async () => { fetched += 1; } }, () => 3, async () => undefined);
+    assert.equal(fetched, 0);
+    assert.equal(members, 'cache');
+  });
+
+  it('a short cache asks the gateway', async () => {
+    const cache = { size: 1 };
+    let fetched = 0;
+    await guildMembersOf({ cache, fetch: async () => { fetched += 1; cache.size = 3; } }, () => 3, async () => undefined);
+    assert.equal(fetched, 1);
+  });
+
+  it('a rate limit is waited out once, then the gateway is asked again', async () => {
+    const cache = { size: 1 };
+    const waits: number[] = [];
+    let calls = 0;
+    await guildMembersOf(
+      { cache, fetch: async () => { calls += 1; if (calls === 1) throw limited(2.5); cache.size = 3; } },
+      () => 3,
+      async (ms) => { waits.push(ms); },
+    );
+    assert.equal(calls, 2);
+    assert.deepEqual(waits, [2500]);
+  });
+
+  it('a second rate limit, a long one or another failure is passed on (the roster is then unknown)', async () => {
+    const twice = { cache: { size: 1 }, fetch: async () => { throw limited(1); } };
+    await assert.rejects(guildMembersOf(twice, () => 3, async () => undefined), /rate limited/);
+    let calls = 0;
+    const long = { cache: { size: 1 }, fetch: async () => { calls += 1; throw limited(120); } };
+    await assert.rejects(guildMembersOf(long, () => 3, async () => undefined), /rate limited/);
+    assert.equal(calls, 1, 'a wait longer than a turn can bear is not taken');
+    await assert.rejects(guildMembersOf({ cache: { size: 1 }, fetch: async () => { throw new Error('boom'); } }, () => 3, async () => undefined), /boom/);
   });
 });

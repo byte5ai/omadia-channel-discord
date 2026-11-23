@@ -23,8 +23,10 @@ import { DISCORD_CHANNEL_TYPE } from './renderer.js';
  *    server's member count, or one that could not be read, is `partial` /
  *    `unknown` with the reason in `statusDetail`. Never `complete` on doubt.
  *
- * `fresh: true` skips the cache and asks Discord now (`guild.members.fetch()`
- * requests the whole list over the Gateway). The cache is also dropped when a
+ * `fresh: true` skips this provider's cache and reads the bot's member list
+ * now: the gateway cache when it holds every member (the intent keeps it
+ * current on joins and leaves), else a gateway request (see
+ * {@link guildMembersOf}, rate limit aware). The cache is also dropped when a
  * member joins, leaves or changes roles (see {@link DiscordRosterProvider.invalidateAll}),
  * so a join within the cache lifetime is seen by the next query either way.
  */
@@ -222,4 +224,49 @@ export class DiscordRosterProvider implements ConversationRosterProvider {
     const key = asChannelKey.trim().toLowerCase();
     return key === self.id || key === this.deps.channelKey?.();
   }
+}
+
+/** The longest gateway rate limit a roster read waits out (a turn waits for it). */
+export const MAX_RATE_LIMIT_WAIT_MS = 35_000;
+
+/**
+ * Make the bot's member cache of a server hold every member, as cheaply as
+ * Discord allows. Resolves to where the list came from.
+ *
+ * Discord rate-limits the gateway's Request Guild Members (opcode 8) per
+ * server: a second full request within the window is refused (discord.js
+ * rejects with a `GatewayRateLimitError` carrying `retry_after` in seconds).
+ * The turn's audience and the facilitation engine's fresh read come seconds
+ * apart, so asking the gateway every time made the second read `unknown`.
+ *
+ *  - With the Server Members intent the cache follows every join and leave
+ *    (GUILD_MEMBER_ADD / REMOVE update the cache and `memberCount` together),
+ *    so a cache that holds `memberCount` members IS the current list, a join
+ *    included: no request.
+ *  - A shorter cache asks the gateway; a rate limit is waited out once when
+ *    it is short enough for a turn, then the gateway is asked again.
+ *  - Anything else is passed on: the caller reports the roster `unknown`.
+ */
+export async function guildMembersOf(
+  members: { readonly cache: { readonly size: number }; fetch: () => Promise<unknown> },
+  memberCount: () => number,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<'cache' | 'gateway'> {
+  if (members.cache.size >= memberCount()) return 'cache';
+  try {
+    await members.fetch();
+  } catch (err) {
+    const waitMs = rateLimitWaitMs(err);
+    if (waitMs === undefined || waitMs > MAX_RATE_LIMIT_WAIT_MS) throw err;
+    await sleep(waitMs);
+    if (members.cache.size >= memberCount()) return 'cache';
+    await members.fetch();
+  }
+  return 'gateway';
+}
+
+/** `retry_after` (seconds) of a gateway rate limit, in ms; undefined for any other error. */
+function rateLimitWaitMs(err: unknown): number | undefined {
+  const retryAfter = (err as { data?: { retry_after?: unknown } } | undefined)?.data?.retry_after;
+  return typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0 ? Math.ceil(retryAfter * 1000) : undefined;
 }
