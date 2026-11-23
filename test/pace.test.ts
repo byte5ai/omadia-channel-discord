@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { InMemorySpeakerHistoryStore, paceAckText, type SemanticAnswer } from '@omadia/channel-sdk';
 
 import { deliverToMessage } from '../src/delivery.js';
-import { acknowledgeAs, MESSAGE_PACE, runPaced, SLASH_PACE } from '../src/pace.js';
+import { acknowledgeAs, acknowledgeUnlessPosted, MESSAGE_PACE, OwnPosts, runPaced, SLASH_PACE } from '../src/pace.js';
 import { manualClock, MIRA } from './helpers.js';
 
 function pending<T>() {
@@ -141,5 +141,36 @@ describe('acknowledgement under the agent\'s name (spec 2042 §5.8)', () => {
     const posted: SemanticAnswer[] = [];
     await acknowledgeAs(undefined, async (answer) => void posted.push(answer))('x');
     assert.deepEqual(posted, []);
+  });
+});
+
+// discord#6 live run: a facilitator's turn posts its handshake and the vote
+// through the bot itself; the acknowledgement then came AFTER them ("On it.
+// This will take a moment." below the result). Once the bot has said
+// something in the conversation during the turn, there is nothing to announce.
+describe('no acknowledgement after the bot already posted in the turn', () => {
+  it('the bot posted in the channel since the turn started: the acknowledgement is left out', async () => {
+    const posts = new OwnPosts();
+    const acks: string[] = [];
+    const turnStartedAt = 1_000;
+    posts.record('chan-1', 1_500);
+    await acknowledgeUnlessPosted(() => posts.since('chan-1', turnStartedAt), async (text) => { acks.push(text); })('On it.');
+    assert.deepEqual(acks, []);
+  });
+
+  it('an older post, or one in another channel, does not count: the acknowledgement goes out', async () => {
+    const posts = new OwnPosts();
+    const acks: string[] = [];
+    posts.record('chan-1', 900);
+    posts.record('chan-2', 1_500);
+    await acknowledgeUnlessPosted(() => posts.since('chan-1', 1_000), async (text) => { acks.push(text); })('On it.');
+    assert.deepEqual(acks, ['On it.']);
+  });
+
+  it('the latest post of a channel is kept, an earlier one never overwrites it', () => {
+    const posts = new OwnPosts();
+    posts.record('chan-1', 2_000);
+    posts.record('chan-1', 1_200);
+    assert.equal(posts.since('chan-1', 1_500), true);
   });
 });
