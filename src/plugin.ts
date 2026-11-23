@@ -61,7 +61,7 @@ export async function activate(ctx: PluginContext, core: CoreApi): Promise<Chann
   // and the shared chatAgent@1 is never used: it refuses non-canvas turns.
   if (!ctx.services.get(CHANNEL_RESOLVER_SERVICE) && !getChatAgent(ctx)) {
     throw new Error(
-      '@omadia/channel-discord: orchestrator unavailable (no channelResolver, no getChatAgent) — the orchestrator plugin must be installed and active',
+      '@omadia/channel-discord: agent runtime unavailable (no channelResolver, no getChatAgent) — the agent runtime must be installed and active',
     );
   }
 

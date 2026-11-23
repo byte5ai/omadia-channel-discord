@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+User-visible texts no longer say "Orchestrator" (spec 2042 §6 criterion 12, `docs/terminology.md`): the manifest description, the package description, the README and the admin page now speak of your agents and the agent runtime.
+
+- Tests: a failing turn ends in a system notice after the acknowledgement as well as without one, and in a slash command (criterion 10). No behaviour change.
+
 ## 0.5.0
 
 Native facilitators in Discord (byte5ai/omadia-channel-discord#6, spec 2043

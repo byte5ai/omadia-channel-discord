@@ -4,7 +4,7 @@
 
 ### Talk to your omadia agents from Discord.
 
-A signed omadia plugin that connects a Discord bot to your agent team. It routes direct messages, server mentions, and a slash command into the omadia orchestrator and posts the reply back on the same thread.
+A signed omadia plugin that connects a Discord bot to your agent team. It routes direct messages, server mentions, and a slash command to your agents and posts the reply back on the same thread.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 [![Built for omadia](https://img.shields.io/badge/built%20for-omadia-2496ED.svg)](https://github.com/byte5ai/omadia)
@@ -82,13 +82,13 @@ A facilitator agent (spec 2043) moderates a server channel or thread: it collect
 
 ## How it works in omadia
 
-A channel plugin (`kind: channel`) for omadia core 1.79 or newer. The omadia kernel activates it from `manifest.yaml`, then it opens the Discord Gateway connection. Each inbound message goes to the orchestrator chat agent, and the response comes back to Discord. The channel needs an LLM provider assigned to the orchestrator first, otherwise there is no agent to answer.
+A channel plugin (`kind: channel`) for omadia core 1.79 or newer. The omadia kernel activates it from `manifest.yaml`, then it opens the Discord Gateway connection. Each inbound message goes to the agent runtime, and the response comes back to Discord. The channel needs an LLM provider assigned to the agent runtime first, otherwise there is no agent to answer.
 
 ## Install
 
 1. Install from the [plugin hub](https://hub.omadia.ai) in the omadia admin UI.
 2. Open the plugin setup page and fill in the fields below. There is no API key: the channel uses the setup tokens.
-3. Assign an LLM provider to the orchestrator first, or the channel has no agent to answer with.
+3. Assign a model to the agent runtime first, or the channel has no agent to answer with.
 
 ## Configuration
 
